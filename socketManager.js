@@ -73,17 +73,15 @@ function initializeSocketManager(io) {
                 socket.user = user;
                 userSockets.set(user._id.toString(), socket.id);
                 
-                // LÓGICA DE RECONEXÃO FORÇADA
+                // LÓGICA DE REJOIN SIMPLIFICADA E CORRETA
                 const ongoingMatch = await Match.findOne({
                     players: user._id,
                     status: 'in_progress'
                 });
                 
                 if (ongoingMatch) {
-                    const room = `match-${ongoingMatch._id.toString()}`;
-                    socket.join(room);
-                    // Emite um evento que força o redirecionamento para a página do jogo
-                    socket.emit('force-rejoin-game', { matchId: ongoingMatch._id.toString() });
+                    // Apenas informa o frontend. O frontend decide o que fazer.
+                    socket.emit('rejoin-prompt', { matchId: ongoingMatch._id.toString() });
                 }
 
             } catch (error) {
@@ -92,7 +90,7 @@ function initializeSocketManager(io) {
             }
         });
 
-        socket.on('create-lobby-game', async ({ betAmount, description, timeLimit, isPrivate, privateCode }) => {
+        socket.on('create-lobby-game', async ({ betAmount, description, timeLimit }) => {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
             
             const ongoingMatch = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
@@ -121,8 +119,7 @@ function initializeSocketManager(io) {
                 betAmount,
                 lobbyInfo: { description, createdBy: user._id },
                 timeLimit,
-                isPrivate,
-                privateCode: isPrivate ? privateCode : null
+                isPrivate: false
             });
             match.matchId = await require('./utils').generateUniqueNumericId(Match, 'matchId', config.ids.matchIdLength);
             
@@ -162,44 +159,21 @@ function initializeSocketManager(io) {
             if (p1SocketId) io.sockets.sockets.get(p1SocketId)?.join(room);
             if (p2SocketId) io.sockets.sockets.get(p2SocketId)?.join(room);
             
-            // Emite o evento para a sala inteira, garantindo que ambos os jogadores recebam.
             io.to(room).emit('match-found', { matchId: match._id.toString() });
-
-            const timeoutId = setTimeout(async () => {
-                const currentMatch = await Match.findById(match._id);
-                if (currentMatch && currentMatch.status === 'in_progress') { 
-                    const allPlayersInRoom = io.sockets.adapter.rooms.get(room)?.size === 2;
-                    if(!allPlayersInRoom) {
-                         currentMatch.status = 'cancelled';
-                        await currentMatch.save();
-
-                        const p1 = await User.findById(currentMatch.players[0]);
-                        const p2 = await User.findById(currentMatch.players[1]);
-                        p1.balance += currentMatch.betAmount;
-                        p2.balance += currentMatch.betAmount;
-                        await p1.save();
-                        await p2.save();
-                        
-                        io.to(room).emit('game-cancelled', { message: 'Um dos jogadores não conectou a tempo. Aposta devolvida.' });
-                        activeGames.delete(match._id.toString());
-                    }
-                }
-            }, config.game.opponentConnectionTimeout);
-            
-            activeGames.set(match._id.toString(), { playerTimeout: timeoutId });
-
             io.emit('lobby-update');
         });
 
         socket.on('player-ready', async ({ matchId }) => {
-            const game = activeGames.get(matchId);
-            if (game && game.playerTimeout) {
-                clearTimeout(game.playerTimeout);
-                delete game.playerTimeout;
-            }
-            
             const room = `match-${matchId}`;
             const clients = io.sockets.adapter.rooms.get(room);
+            
+            // Uma verificação para evitar que o timeout cancele o jogo se os jogadores já estiverem prontos.
+            const game = activeGames.get(matchId);
+            if (game && clients && clients.size === 2) {
+                 clearTimeout(game.playerTimeout);
+                 delete game.playerTimeout;
+            }
+            
             if (clients && clients.size === 2) {
                 io.to(room).emit('game-start');
             }
@@ -231,9 +205,7 @@ function initializeSocketManager(io) {
         socket.on('make-move', async ({ matchId, move }) => {
             if (!socket.user) return;
             const match = await Match.findById(matchId);
-            if (!match || match.status !== 'in_progress' || socket.user._id.toString() !== match.currentPlayer.toString()) {
-                return;
-            }
+            if (!match || match.status !== 'in_progress' || socket.user._id.toString() !== match.currentPlayer.toString()) return;
 
             const board = gameLogic.stringToBoard(match.boardState);
             const playerNumber = match.players[0].equals(socket.user._id) ? 1 : 2;
@@ -259,8 +231,7 @@ function initializeSocketManager(io) {
             } else {
                 await match.save();
                 const opponentMoves = gameLogic.getAllPossibleMoves(newBoard, opponentPlayerNumber);
-                const room = `match-${matchId}`;
-                io.to(room).emit('move-made', { newBoardState: newBoard, currentPlayerId: opponentId, possibleMoves: opponentMoves });
+                io.to(`match-${matchId}`).emit('move-made', { newBoardState: newBoard, currentPlayerId: opponentId, possibleMoves: opponentMoves });
             }
         });
 
@@ -268,13 +239,10 @@ function initializeSocketManager(io) {
             if (!socket.user) return;
             const match = await Match.findById(matchId);
             if (!match || match.status !== 'in_progress') return;
-
-            const isPlayerInMatch = match.players.includes(socket.user._id);
-            if (!isPlayerInMatch) return;
+            if (!match.players.includes(socket.user._id)) return;
 
             const winnerId = match.players.find(p => !p.equals(socket.user._id));
             const loserId = socket.user._id;
-
             await handleGameOver(io, matchId, winnerId, loserId, 'abandonment');
         });
         
