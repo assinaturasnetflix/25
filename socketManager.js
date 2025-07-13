@@ -49,6 +49,9 @@ async function handleGameOver(io, matchId, winnerId, loserId, reason) {
             reason
         });
 
+        // --- CORREÇÃO: Notificar todos os clientes (lobby, histórico) que precisam de atualizar os seus dados ---
+        io.emit('lobby-update');
+
     } catch (error) {
         await session.abortTransaction();
         console.error('Game over transaction failed:', error);
@@ -73,7 +76,11 @@ function initializeSocketManager(io) {
                 socket.user = user;
                 userSockets.set(user._id.toString(), socket.id);
 
-                // NENHUMA LÓGICA DE REJOIN AQUI. O SERVIDOR NÃO FAZ NADA.
+                // --- CORREÇÃO: Lógica de "Retomar Jogo" ---
+                // REMOVEMOS a lógica proativa de 'rejoin-prompt' que causava o loop.
+                // Agora, a única forma de retomar uma partida é clicando no botão "Retomar" na página de histórico,
+                // que redireciona diretamente para `game.html?matchId=...`.
+                // Isto segue o seu pedido para um fluxo mais simples e reativo.
                 
             } catch (error) {
                 socket.emit('auth-error', 'Token inválido ou expirado.');
@@ -84,9 +91,10 @@ function initializeSocketManager(io) {
         socket.on('create-lobby-game', async ({ betAmount, description, timeLimit }) => {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
             
-            const ongoingMatch = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
+            // Previne a criação de múltiplas apostas/jogos.
+            const ongoingMatch = await Match.findOne({ players: socket.user._id, status: { $in: ['in_progress', 'waiting'] } });
             if (ongoingMatch) {
-                return socket.emit('error-message', 'Você já tem uma partida em andamento. Termine-a antes de criar outra.');
+                return socket.emit('error-message', 'Você já tem uma aposta ou partida em andamento. Termine-a antes de criar outra.');
             }
             
             const user = await User.findById(socket.user._id);
@@ -120,58 +128,95 @@ function initializeSocketManager(io) {
             io.emit('lobby-update');
         });
 
+        // --- CORREÇÃO: Sincronização de "Join Game" ---
         socket.on('join-game', async ({ matchId }) => {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
 
-            const ongoingMatch = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
-            if (ongoingMatch) {
+            const ongoingMatchCheck = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
+            if (ongoingMatchCheck) {
                 return socket.emit('error-message', 'Você já tem uma partida em andamento. Termine-a antes de entrar em outra.');
             }
             
-            const playerTwo = await User.findById(socket.user._id);
             const match = await Match.findById(matchId);
 
-            if (!match || match.status !== 'waiting') return socket.emit('error-message', 'Partida não disponível.');
-            if (playerTwo._id.toString() === match.players[0].toString()) return socket.emit('error-message', 'Não pode entrar na sua própria partida.');
+            if (!match || match.status !== 'waiting') return socket.emit('error-message', 'Partida não disponível ou já iniciada.');
+            
+            const playerOneId = match.players[0].toString();
+            if (socket.user._id.toString() === playerOneId) return socket.emit('error-message', 'Não pode entrar na sua própria partida.');
+            
+            // Verifica se o criador do jogo está online. Esta é a chave para a sincronização.
+            const p1SocketId = userSockets.get(playerOneId);
+            if (!p1SocketId || !io.sockets.sockets.get(p1SocketId)) {
+                return socket.emit('error-message', 'O criador da partida não está online. Tente outra partida.');
+            }
+
+            const playerTwo = await User.findById(socket.user._id);
             if (playerTwo.balance < match.betAmount) return socket.emit('error-message', 'Saldo insuficiente.');
 
-            playerTwo.balance -= match.betAmount;
-            
-            match.players.push(playerTwo._id);
-            match.status = 'in_progress';
-            
-            await playerTwo.save();
-            await match.save();
+            const session = await User.startSession();
+            session.startTransaction();
+            try {
+                playerTwo.balance -= match.betAmount;
+                match.players.push(playerTwo._id);
+                match.status = 'in_progress';
+                
+                await playerTwo.save({ session });
+                await match.save({ session });
+                await session.commitTransaction();
 
-            const p1SocketId = userSockets.get(match.players[0].toString());
-            const p2SocketId = userSockets.get(match.players[1].toString());
+                const p2SocketId = socket.id;
+                const room = `match-${match._id.toString()}`;
 
-            const room = `match-${match._id.toString()}`;
-            if (p1SocketId) io.sockets.sockets.get(p1SocketId)?.join(room);
-            if (p2SocketId) io.sockets.sockets.get(p2SocketId)?.join(room);
-            
-            io.to(room).emit('match-found', { matchId: match._id.toString() });
-            io.emit('lobby-update');
+                // Adiciona ambos os jogadores à sala da partida
+                io.sockets.sockets.get(p1SocketId)?.join(room);
+                io.sockets.sockets.get(p2SocketId)?.join(room);
+                
+                // Emite para a sala, garantindo que AMBOS recebem o evento para redirecionar para `versus.html`.
+                io.to(room).emit('match-found', { matchId: match._id.toString() });
+                
+                // Atualiza o lobby para todos os outros clientes.
+                io.emit('lobby-update');
+                
+            } catch (error) {
+                await session.abortTransaction();
+                console.error("Join game transaction failed: ", error);
+                socket.emit('error-message', 'Ocorreu um erro ao entrar na partida. Tente novamente.');
+            } finally {
+                session.endSession();
+            }
         });
 
         socket.on('player-ready', async ({ matchId }) => {
             const room = `match-${matchId}`;
-            const clients = io.sockets.adapter.rooms.get(room);
-            if (clients && clients.size === 2) {
+            const match = await Match.findById(matchId);
+            if (!match) return;
+
+            // Espera um tempo para a tela "Versus" ser exibida antes de redirecionar para o jogo.
+            setTimeout(() => {
                 io.to(room).emit('game-start');
-            }
+            }, config.game.versusScreenDuration);
         });
 
         socket.on('get-game-state', async (matchId) => {
             if (!socket.user) return;
+            
+            // Garante que o usuário entra na sala da partida ao recarregar a página
+            const room = `match-${matchId}`;
+            socket.join(room);
+
             const match = await Match.findById(matchId).populate('players', 'username avatar stats bio');
             if (!match || !match.players.map(p => p._id.toString()).includes(socket.user._id.toString())) {
                 return socket.emit('error-message', 'Partida não encontrada.');
             }
 
+            // O `playerNumber` é necessário para a lógica do jogo de damas.
             const playerNumber = match.players[0]._id.equals(socket.user._id) ? 1 : 2;
             const board = gameLogic.stringToBoard(match.boardState);
-            const moves = gameLogic.getAllPossibleMoves(board, playerNumber);
+            
+            // Apenas calcula os movimentos para o jogador da vez para otimizar.
+            const moves = match.currentPlayer.equals(socket.user._id) 
+                ? gameLogic.getAllPossibleMoves(board, playerNumber)
+                : [];
             
             socket.emit('game-state', {
                 matchId: match._id.toString(),
@@ -195,7 +240,9 @@ function initializeSocketManager(io) {
             const possibleMoves = gameLogic.getAllPossibleMoves(board, playerNumber);
             const isValidMove = possibleMoves.some(m => m.from.r === move.from.r && m.from.c === move.from.c && m.to.r === move.to.r && m.to.c === move.to.c);
             
-            if (!isValidMove) return;
+            if (!isValidMove) {
+                 return socket.emit('error-message', 'Movimento inválido.');
+            }
 
             const fullMoveData = possibleMoves.find(m => m.from.r === move.from.r && m.from.c === move.from.c && m.to.r === move.to.r && m.to.c === move.to.c);
             const newBoard = gameLogic.performMove(board, fullMoveData);
@@ -214,23 +261,38 @@ function initializeSocketManager(io) {
             } else {
                 await match.save();
                 const opponentMoves = gameLogic.getAllPossibleMoves(newBoard, opponentPlayerNumber);
-                io.to(`match-${matchId}`).emit('move-made', { newBoardState: newBoard, currentPlayerId: opponentId, possibleMoves: opponentMoves });
+                io.to(`match-${matchId}`).emit('move-made', { newBoardState: newBoard, currentPlayerId: opponentId.toString(), possibleMoves: opponentMoves });
             }
         });
 
+        // --- CORREÇÃO: Lógica de "Sair do Jogo" ---
         socket.on('leave-game', async ({ matchId }) => {
-            if (!socket.user) return;
+            if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
+            
             const match = await Match.findById(matchId);
-            if (!match || match.status !== 'in_progress') return;
-            if (!match.players.includes(socket.user._id)) return;
+            
+            if (!match) {
+                return socket.emit('error-message', 'Partida não encontrada.');
+            }
+            if (match.status !== 'in_progress') {
+                // Previne que se abandone um jogo já terminado.
+                return socket.emit('error-message', 'Só pode sair de partidas em andamento.');
+            }
+            if (!match.players.map(p => p.toString()).includes(socket.user._id.toString())) {
+                return socket.emit('error-message', 'Você não é um jogador nesta partida.');
+            }
 
             const winnerId = match.players.find(p => !p.equals(socket.user._id));
             const loserId = socket.user._id;
+            
+            // A função `handleGameOver` já notifica os clientes e atualiza o estado.
             await handleGameOver(io, matchId, winnerId, loserId, 'abandonment');
         });
         
         socket.on('disconnect', async () => {
-            if (socket.user) userSockets.delete(socket.user._id.toString());
+            if (socket.user) {
+                userSockets.delete(socket.user._id.toString());
+            }
         });
     });
 }
