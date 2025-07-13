@@ -168,8 +168,6 @@ function initializeSocketManager(io) {
 
             const matchDataForPlayers = {
                 matchId: match._id.toString(),
-                playerOne: { _id: playerOne._id, username: playerOne.username, avatar: playerOne.avatar },
-                playerTwo: { _id: playerTwo._id, username: playerTwo.username, avatar: playerTwo.avatar },
             };
             
             io.to(room).emit('match-found', matchDataForPlayers);
@@ -222,7 +220,7 @@ function initializeSocketManager(io) {
 
         socket.on('get-game-state', async (matchId) => {
             if (!socket.user) return;
-            const match = await Match.findById(matchId).populate('players');
+            const match = await Match.findById(matchId).populate('players', 'username avatar stats bio');
             if (!match || !match.players.map(p => p._id.toString()).includes(socket.user._id.toString())) {
                 return socket.emit('error-message', 'Partida não encontrada.');
             }
@@ -232,10 +230,13 @@ function initializeSocketManager(io) {
             const moves = gameLogic.getAllPossibleMoves(board, playerNumber);
             
             socket.emit('game-state', {
+                matchId: match._id,
                 boardState: board,
                 currentPlayerId: match.currentPlayer,
-                playerOne: { _id: match.players[0]._id, username: match.players[0].username, avatar: match.players[0].avatar },
-                playerTwo: { _id: match.players[1]._id, username: match.players[1].username, avatar: match.players[1].avatar },
+                playerOne: match.players[0],
+                playerTwo: match.players[1],
+                betAmount: match.betAmount,
+                timeLimit: match.timeLimit,
                 possibleMoves: moves
             });
         });
