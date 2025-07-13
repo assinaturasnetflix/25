@@ -5,6 +5,7 @@ const nodemailer = require('nodemailer');
 const { User, Transaction, Game, LobbyBet, PlatformConfig } = require('./models');
 const config = require('./config');
 const { generateRandomCode } = require('./utils');
+const { notifyNewLobbyBet } = require('./socketManager');
 
 cloudinary.config(config.CLOUDINARY_CONFIG);
 
@@ -133,11 +134,11 @@ exports.updateProfile = async (req, res) => {
         const { username, bio } = req.body;
         const updateData = {};
         if (username) updateData.username = username;
-        if (bio) updateData.bio = bio;
+        if (bio || bio === '') updateData.bio = bio;
 
         if (username && username !== req.user.username) {
             const existingUser = await User.findOne({ username });
-            if (existingUser) {
+            if (existingUser && existingUser._id.toString() !== req.user.id) {
                 return res.status(400).json({ message: 'Nome de usuário já em uso.' });
             }
         }
@@ -312,9 +313,6 @@ exports.createLobbyBet = async (req, res) => {
             return res.status(400).json({ message: `O valor da aposta deve estar entre ${platformConfig.limits.minBet} MT e ${platformConfig.limits.maxBet} MT.` });
         }
 
-        user.balance -= betAmount;
-        await user.save();
-
         const lobbyBet = new LobbyBet({
             creator: user.id,
             betAmount,
@@ -322,12 +320,13 @@ exports.createLobbyBet = async (req, res) => {
             timeLimit
         });
         await lobbyBet.save();
+
+        await User.findByIdAndUpdate(user.id, { $inc: { balance: -betAmount }});
         
-        // This should be emitted via WebSocket to all clients in the lobby
-        // For now, just confirming via HTTP
+        notifyNewLobbyBet(lobbyBet);
+        
         res.status(201).json({ message: 'Aposta criada no lobby com sucesso.', lobbyBet });
     } catch (error) {
-        await User.findByIdAndUpdate(req.user.id, { $inc: { balance: parseFloat(req.body.betAmount) } });
         res.status(500).json({ message: 'Erro ao criar aposta.', error: error.message });
     }
 };
@@ -366,7 +365,6 @@ exports.cancelLobbyBet = async (req, res) => {
         res.status(500).json({ message: 'Erro ao cancelar aposta.', error: error.message });
     }
 };
-
 
 exports.getGameHistory = async (req, res) => {
     try {

@@ -1,9 +1,9 @@
 const socketIo = require('socket.io');
 const jwt = require('jsonwebtoken');
-const { User, Game, LobbyBet } = require('./models');
-const config = require('./config');
+const { User, Game, LobbyBet, PlatformConfig } = require('./models');
+const config =require('./config');
 const { createInitialBoard, getValidMoves, applyMove, checkGameEnd, getPlayerColor, PIECE_TYPES } = require('./gameLogic');
-const { generateRandomCode, getWinnerPayout } = require('./utils');
+const { generateRandomCode } = require('./utils');
 
 let io;
 
@@ -108,11 +108,11 @@ const initializeSocket = (server) => {
 
         socket.on('acceptLobbyBet', async ({ betId }) => {
             try {
-                const bet = await LobbyBet.findById(betId);
+                const bet = await LobbyBet.findById(betId).populate('creator');
                 if (!bet || bet.status !== 'open') {
                     return socket.emit('error', { message: 'Aposta não disponível.' });
                 }
-
+                
                 const opponent = await User.findById(socket.user.id);
                 if (bet.creator.equals(opponent.id)) {
                     return socket.emit('error', { message: 'Não pode aceitar a sua própria aposta.' });
@@ -126,9 +126,11 @@ const initializeSocket = (server) => {
                 bet.gameId = gameCode;
                 await bet.save();
 
+                io.to('lobby').emit('betRemoved', bet._id);
+
                 await User.findByIdAndUpdate(opponent.id, { $inc: { balance: -bet.betAmount } });
 
-                const creator = await User.findById(bet.creator);
+                const creator = bet.creator;
                 
                 const game = new Game({
                     gameId: gameCode,
@@ -148,18 +150,18 @@ const initializeSocket = (server) => {
                 socket.emit('betAccepted', { gameCode });
 
                 setTimeout(async () => {
-                    const updatedGame = await Game.findById(game.id).populate('players', 'username avatar');
+                    const updatedGame = await Game.findById(game.id);
                     const creatorSocketInfo = connectedUsers.get(creator.id.toString());
                     const opponentSocketInfo = connectedUsers.get(opponent.id.toString());
                     
                     if (creatorSocketInfo && opponentSocketInfo) {
+                        const populatedGame = await Game.findById(game.id).populate('players', 'username avatar');
                         io.to(creatorSocketInfo.socketId).join(gameCode);
                         io.to(opponentSocketInfo.socketId).join(gameCode);
                         updatedGame.status = 'in_progress';
                         await updatedGame.save();
-                        io.to(gameCode).emit('gameStarted', updatedGame);
+                        io.to(gameCode).emit('gameStarted', populatedGame);
                     } else {
-                        // Iniciar temporizador de 1 minuto
                         io.to(creatorSocketInfo?.socketId).to(opponentSocketInfo?.socketId).emit('waitingForOpponent', { timeout: 60 });
                         const timeoutId = setTimeout(async () => {
                            const finalCheckGame = await Game.findById(game.id);
@@ -171,19 +173,25 @@ const initializeSocket = (server) => {
                                io.to(creatorSocketInfo?.socketId).to(opponentSocketInfo?.socketId).emit('gameCancelled', { message: 'Oponente não conectou. A aposta foi reembolsada.' });
                            }
                         }, 60 * 1000);
-                        game.timeoutId = timeoutId.toString(); // Not a schema field, just for reference
                     }
-                }, 5000); // Wait for versus screen
+                }, 5000);
 
             } catch (error) {
+                console.log(error);
                 socket.emit('error', { message: 'Erro ao aceitar aposta.' });
             }
         });
         
-        socket.on('playerReadyInGame', async ({ gameId }) => {
-            const game = await Game.findOne({ gameId: gameId });
-            if (!game) return;
-            // logic to clear timeout if both players are ready
+        socket.on('joinGameRoom', async ({ gameId }) => {
+            const game = await Game.findOne({ gameId })
+                                   .populate('players', 'username avatar')
+                                   .populate('winner', 'username');
+            if (game && game.players.some(p => p._id.equals(socket.user.id))) {
+                socket.join(game.gameId);
+                io.to(socket.id).emit('gameUpdate', game);
+            } else {
+                socket.emit('error', { message: 'Não foi possível entrar na sala do jogo.' });
+            }
         });
 
         socket.on('makeMove', async ({ gameId, move }) => {
@@ -195,7 +203,11 @@ const initializeSocket = (server) => {
                 }
 
                 const board = JSON.parse(game.boardState);
-                const playerColor = getPlayerColor(board[move.from.r][move.from.c]);
+                
+                const pieceAtFrom = board[move.from.r][move.from.c];
+                if (pieceAtFrom === PIECE_TYPES.EMPTY) return socket.emit('error', { message: 'Não há peça na casa de origem.'});
+
+                const playerColor = getPlayerColor(pieceAtFrom);
                 
                 const validMoves = getValidMoves(board, playerColor);
                 const isValidMove = validMoves.some(m => 
@@ -224,7 +236,8 @@ const initializeSocket = (server) => {
                     captured: executedMove.captured ? executedMove.captured.map(c => `${c.r},${c.c}`) : []
                 });
                 
-                const gameResult = checkGameEnd(newBoard, playerColor === 'black' ? 'white' : 'black');
+                const nextPlayerColor = playerColor === 'black' ? 'white' : 'black';
+                const gameResult = checkGameEnd(newBoard, nextPlayerColor);
                 
                 if (gameResult.isFinished) {
                     await handleGameEnd(game, gameResult.winner);
@@ -233,6 +246,7 @@ const initializeSocket = (server) => {
                     io.to(game.gameId).emit('moveMade', { game });
                 }
             } catch (error) {
+                console.log(error);
                 socket.emit('error', { message: 'Erro ao processar jogada.' });
             }
         });
@@ -285,7 +299,6 @@ async function handleGameEnd(game, winnerColor, wasSurrender = false) {
     io.to(game.gameId).emit('gameOver', populatedGame);
 }
 
-
 const getIoInstance = () => {
     if (!io) {
         throw new Error("Socket.io not initialized!");
@@ -293,7 +306,14 @@ const getIoInstance = () => {
     return io;
 };
 
+// Adicionando uma função para ser chamada de fora quando uma aposta for criada
+const notifyNewLobbyBet = async (bet) => {
+    const populatedBet = await LobbyBet.findById(bet._id).populate('creator', 'username avatar');
+    getIoInstance().to('lobby').emit('newBet', populatedBet);
+};
+
 module.exports = {
     initializeSocket,
-    getIoInstance
+    getIoInstance,
+    notifyNewLobbyBet
 };
