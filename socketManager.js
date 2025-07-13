@@ -73,6 +73,7 @@ function initializeSocketManager(io) {
                 socket.user = user;
                 userSockets.set(user._id.toString(), socket.id);
                 
+                // LÓGICA DE RECONEXÃO FORÇADA
                 const ongoingMatch = await Match.findOne({
                     players: user._id,
                     status: 'in_progress'
@@ -81,7 +82,8 @@ function initializeSocketManager(io) {
                 if (ongoingMatch) {
                     const room = `match-${ongoingMatch._id.toString()}`;
                     socket.join(room);
-                    socket.emit('rejoin-game', { matchId: ongoingMatch._id.toString() });
+                    // Emite um evento que força o redirecionamento para a página do jogo
+                    socket.emit('force-rejoin-game', { matchId: ongoingMatch._id.toString() });
                 }
 
             } catch (error) {
@@ -92,6 +94,11 @@ function initializeSocketManager(io) {
 
         socket.on('create-lobby-game', async ({ betAmount, description, timeLimit, isPrivate, privateCode }) => {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
+            
+            const ongoingMatch = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
+            if (ongoingMatch) {
+                return socket.emit('error-message', 'Você já tem uma partida em andamento. Termine-a antes de criar outra.');
+            }
             
             const user = await User.findById(socket.user._id);
             const settings = await PlatformSettings.findOne({ singleton: true });
@@ -123,11 +130,15 @@ function initializeSocketManager(io) {
             await match.save();
             
             io.emit('lobby-update');
-            socket.emit('game-created', { matchId: match._id });
         });
 
         socket.on('join-game', async ({ matchId }) => {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
+
+            const ongoingMatch = await Match.findOne({ players: socket.user._id, status: 'in_progress' });
+            if (ongoingMatch) {
+                return socket.emit('error-message', 'Você já tem uma partida em andamento. Termine-a antes de entrar em outra.');
+            }
             
             const playerTwo = await User.findById(socket.user._id);
             const match = await Match.findById(matchId);
@@ -142,24 +153,24 @@ function initializeSocketManager(io) {
             match.status = 'in_progress';
             
             await playerTwo.save();
-            const savedMatch = await match.save();
-            const populatedMatch = await Match.findById(savedMatch._id).populate('players', 'username avatar stats bio');
+            await match.save();
 
-            const p1SocketId = userSockets.get(populatedMatch.players[0]._id.toString());
-            const p2SocketId = userSockets.get(populatedMatch.players[1]._id.toString());
+            const p1SocketId = userSockets.get(match.players[0].toString());
+            const p2SocketId = userSockets.get(match.players[1].toString());
 
-            const room = `match-${populatedMatch._id.toString()}`;
+            const room = `match-${match._id.toString()}`;
             if (p1SocketId) io.sockets.sockets.get(p1SocketId)?.join(room);
             if (p2SocketId) io.sockets.sockets.get(p2SocketId)?.join(room);
             
-            io.to(room).emit('match-found', { matchId: populatedMatch._id.toString() });
+            // Emite o evento para a sala inteira, garantindo que ambos os jogadores recebam.
+            io.to(room).emit('match-found', { matchId: match._id.toString() });
 
             const timeoutId = setTimeout(async () => {
                 const currentMatch = await Match.findById(match._id);
-                if (currentMatch && currentMatch.status !== 'completed' && currentMatch.status !== 'cancelled') {
-                    const creatorSocketId = userSockets.get(currentMatch.players[0].toString());
-                    if (!creatorSocketId || !io.sockets.sockets.get(creatorSocketId)?.connected) {
-                        currentMatch.status = 'cancelled';
+                if (currentMatch && currentMatch.status === 'in_progress') { 
+                    const allPlayersInRoom = io.sockets.adapter.rooms.get(room)?.size === 2;
+                    if(!allPlayersInRoom) {
+                         currentMatch.status = 'cancelled';
                         await currentMatch.save();
 
                         const p1 = await User.findById(currentMatch.players[0]);
@@ -169,19 +180,13 @@ function initializeSocketManager(io) {
                         await p1.save();
                         await p2.save();
                         
-                        const p2SocketId = userSockets.get(p2._id.toString());
-                        if(p2SocketId) io.to(p2SocketId).emit('game-cancelled', { message: 'Oponente não apareceu. Aposta devolvida.' });
-
+                        io.to(room).emit('game-cancelled', { message: 'Um dos jogadores não conectou a tempo. Aposta devolvida.' });
                         activeGames.delete(match._id.toString());
                     }
                 }
             }, config.game.opponentConnectionTimeout);
             
-            activeGames.set(match._id.toString(), {
-                playerTimeout: timeoutId,
-                boardState: match.boardState,
-                currentPlayerId: match.currentPlayer.toString()
-            });
+            activeGames.set(match._id.toString(), { playerTimeout: timeoutId });
 
             io.emit('lobby-update');
         });
@@ -212,11 +217,11 @@ function initializeSocketManager(io) {
             const moves = gameLogic.getAllPossibleMoves(board, playerNumber);
             
             socket.emit('game-state', {
-                matchId: match._id,
+                matchId: match._id.toString(),
                 boardState: board,
-                currentPlayerId: match.currentPlayer,
-                playerOne: match.players[0],
-                playerTwo: match.players[1],
+                currentPlayerId: match.currentPlayer.toString(),
+                playerOne: match.players[0].toObject(),
+                playerTwo: match.players[1].toObject(),
                 betAmount: match.betAmount,
                 timeLimit: match.timeLimit,
                 possibleMoves: moves
@@ -225,22 +230,19 @@ function initializeSocketManager(io) {
 
         socket.on('make-move', async ({ matchId, move }) => {
             if (!socket.user) return;
-
             const match = await Match.findById(matchId);
             if (!match || match.status !== 'in_progress' || socket.user._id.toString() !== match.currentPlayer.toString()) {
-                return socket.emit('error-message', 'Não é a sua vez ou a partida é inválida.');
+                return;
             }
 
             const board = gameLogic.stringToBoard(match.boardState);
             const playerNumber = match.players[0].equals(socket.user._id) ? 1 : 2;
             const possibleMoves = gameLogic.getAllPossibleMoves(board, playerNumber);
-
             const isValidMove = possibleMoves.some(m => m.from.r === move.from.r && m.from.c === move.from.c && m.to.r === move.to.r && m.to.c === move.to.c);
             
-            if (!isValidMove) return socket.emit('error-message', 'Jogada inválida.');
+            if (!isValidMove) return;
 
             const fullMoveData = possibleMoves.find(m => m.from.r === move.from.r && m.from.c === move.from.c && m.to.r === move.to.r && m.to.c === move.to.c);
-
             const newBoard = gameLogic.performMove(board, fullMoveData);
             const opponentId = match.players.find(p => !p.equals(socket.user._id));
             const opponentPlayerNumber = playerNumber === 1 ? 2 : 1;
@@ -256,15 +258,9 @@ function initializeSocketManager(io) {
                 await handleGameOver(io, matchId, winnerId, loserId, 'checkmate');
             } else {
                 await match.save();
-                
                 const opponentMoves = gameLogic.getAllPossibleMoves(newBoard, opponentPlayerNumber);
-
                 const room = `match-${matchId}`;
-                io.to(room).emit('move-made', {
-                    newBoardState: newBoard,
-                    currentPlayerId: opponentId,
-                    possibleMoves: opponentMoves
-                });
+                io.to(room).emit('move-made', { newBoardState: newBoard, currentPlayerId: opponentId, possibleMoves: opponentMoves });
             }
         });
 
@@ -281,23 +277,9 @@ function initializeSocketManager(io) {
 
             await handleGameOver(io, matchId, winnerId, loserId, 'abandonment');
         });
-
-        socket.on('admin-spectate', async (matchId) => {
-             if (!socket.user || socket.user.role !== 'admin') return;
-             const match = await Match.findById(matchId).populate('players');
-             if (!match) return;
-             const room = `match-${matchId}`;
-             socket.join(room);
-             socket.emit('spectate-start', {
-                match,
-                boardState: gameLogic.stringToBoard(match.boardState)
-             });
-        });
-
+        
         socket.on('disconnect', async () => {
-            if (socket.user) {
-                userSockets.delete(socket.user._id.toString());
-            }
+            if (socket.user) userSockets.delete(socket.user._id.toString());
         });
     });
 }
