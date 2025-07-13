@@ -77,7 +77,7 @@ router.get('/users/profile', protect, userController.getProfile);
 router.put('/users/profile', protect, userController.updateProfile);
 router.post('/users/avatar', protect, upload.single('avatar'), userController.uploadAvatar);
 router.get('/users/rankings', userController.getRanking);
-router.get('/users/:numericId', user.getPublicProfile);
+router.get('/users/:numericId', userController.getPublicProfile);
 
 router.get('/wallet', protect, walletController.getWalletInfo);
 router.post('/wallet/deposit', protect, upload.single('proofImage'), walletController.requestDeposit);
