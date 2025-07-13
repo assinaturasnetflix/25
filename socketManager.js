@@ -76,25 +76,12 @@ function initializeSocketManager(io) {
                 const ongoingMatch = await Match.findOne({
                     players: user._id,
                     status: 'in_progress'
-                }).populate('players');
+                });
                 
                 if (ongoingMatch) {
                     const room = `match-${ongoingMatch._id.toString()}`;
                     socket.join(room);
-
-                    const board = gameLogic.stringToBoard(ongoingMatch.boardState);
-                    const playerNumber = ongoingMatch.players[0]._id.equals(user._id) ? 1 : 2;
-                    const moves = gameLogic.getAllPossibleMoves(board, playerNumber);
-                    
-                    socket.emit('rejoin-game', {
-                        matchId: ongoingMatch._id,
-                        boardState: board,
-                        currentPlayerId: ongoingMatch.currentPlayer,
-                        playerOne: { _id: ongoingMatch.players[0]._id, username: ongoingMatch.players[0].username, avatar: ongoingMatch.players[0].avatar },
-                        playerTwo: { _id: ongoingMatch.players[1]._id, username: ongoingMatch.players[1].username, avatar: ongoingMatch.players[1].avatar },
-                        betAmount: ongoingMatch.betAmount,
-                        possibleMoves: moves
-                    });
+                    socket.emit('rejoin-game', { matchId: ongoingMatch._id.toString() });
                 }
 
             } catch (error) {
@@ -143,34 +130,29 @@ function initializeSocketManager(io) {
             if (!socket.user) return socket.emit('error-message', 'Não autenticado.');
             
             const playerTwo = await User.findById(socket.user._id);
-            const match = await Match.findById(matchId).populate('players');
+            const match = await Match.findById(matchId);
 
             if (!match || match.status !== 'waiting') return socket.emit('error-message', 'Partida não disponível.');
-            if (playerTwo._id.toString() === match.players[0]._id.toString()) return socket.emit('error-message', 'Não pode entrar na sua própria partida.');
+            if (playerTwo._id.toString() === match.players[0].toString()) return socket.emit('error-message', 'Não pode entrar na sua própria partida.');
             if (playerTwo.balance < match.betAmount) return socket.emit('error-message', 'Saldo insuficiente.');
 
             playerTwo.balance -= match.betAmount;
-            
-            const playerOne = await User.findById(match.players[0]._id);
             
             match.players.push(playerTwo._id);
             match.status = 'in_progress';
             
             await playerTwo.save();
-            await match.save();
+            const savedMatch = await match.save();
+            const populatedMatch = await Match.findById(savedMatch._id).populate('players', 'username avatar stats bio');
 
-            const p1SocketId = userSockets.get(playerOne._id.toString());
-            const p2SocketId = userSockets.get(playerTwo._id.toString());
+            const p1SocketId = userSockets.get(populatedMatch.players[0]._id.toString());
+            const p2SocketId = userSockets.get(populatedMatch.players[1]._id.toString());
 
-            const room = `match-${match._id.toString()}`;
+            const room = `match-${populatedMatch._id.toString()}`;
             if (p1SocketId) io.sockets.sockets.get(p1SocketId)?.join(room);
             if (p2SocketId) io.sockets.sockets.get(p2SocketId)?.join(room);
-
-            const matchDataForPlayers = {
-                matchId: match._id.toString(),
-            };
             
-            io.to(room).emit('match-found', matchDataForPlayers);
+            io.to(room).emit('match-found', { matchId: populatedMatch._id.toString() });
 
             const timeoutId = setTimeout(async () => {
                 const currentMatch = await Match.findById(match._id);
