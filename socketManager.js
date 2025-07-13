@@ -72,18 +72,9 @@ function initializeSocketManager(io) {
                 
                 socket.user = user;
                 userSockets.set(user._id.toString(), socket.id);
-                
-                // LÓGICA DE REJOIN SIMPLIFICADA E CORRETA
-                const ongoingMatch = await Match.findOne({
-                    players: user._id,
-                    status: 'in_progress'
-                });
-                
-                if (ongoingMatch) {
-                    // Apenas informa o frontend. O frontend decide o que fazer.
-                    socket.emit('rejoin-prompt', { matchId: ongoingMatch._id.toString() });
-                }
 
+                // NENHUMA LÓGICA DE REJOIN AQUI. O SERVIDOR NÃO FAZ NADA.
+                
             } catch (error) {
                 socket.emit('auth-error', 'Token inválido ou expirado.');
                 socket.disconnect();
@@ -166,14 +157,6 @@ function initializeSocketManager(io) {
         socket.on('player-ready', async ({ matchId }) => {
             const room = `match-${matchId}`;
             const clients = io.sockets.adapter.rooms.get(room);
-            
-            // Uma verificação para evitar que o timeout cancele o jogo se os jogadores já estiverem prontos.
-            const game = activeGames.get(matchId);
-            if (game && clients && clients.size === 2) {
-                 clearTimeout(game.playerTimeout);
-                 delete game.playerTimeout;
-            }
-            
             if (clients && clients.size === 2) {
                 io.to(room).emit('game-start');
             }
