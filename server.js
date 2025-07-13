@@ -15,7 +15,9 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
+        methods: ["GET", "POST", "PUT", "DELETE"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+        credentials: true
     }
 });
 
@@ -47,7 +49,12 @@ const connectDB = async () => {
 
 connectDB();
 
-app.use(cors({ origin: '*' }));
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -65,6 +72,4 @@ app.get('/', (req, res) => {
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
     console.log(`Servidor a correr na porta ${PORT}`);
-    const protocol = httpServer.key ? 'https' : 'http';
-    console.log(`Servidor aceita requisições ${protocol}`);
 });
