@@ -3,54 +3,68 @@ const http = require('http');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { Server } = require('socket.io');
+const { PlatformSettings } = require('./models');
+const config = require('./config');
 
 dotenv.config();
 
-const config = require('./config');
-const routes = require('./routes');
-const { initializeSocket } = require('./socketManager');
-const { PlatformConfig } = require('./models');
-
 const app = express();
-const server = http.createServer(app);
+const httpServer = http.createServer(app);
 
-app.use(cors({
-    origin: config.CORS_ORIGIN,
-    credentials: true
-}));
+const io = new Server(httpServer, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-mongoose.connect(process.env.MONGO_URI)
-    .then(async () => {
-        console.log('MongoDB Conectado...');
-        let platformConfig = await PlatformConfig.findOne({ key: 'main_config' });
-        if (!platformConfig) {
-            console.log('Criando configurações iniciais da plataforma...');
-            platformConfig = new PlatformConfig();
-            await platformConfig.save();
+const connectDB = async () => {
+    try {
+        const conn = await mongoose.connect(process.env.MONGO_URI);
+        console.log(`MongoDB Conectado: ${conn.connection.host}`);
+        
+        let settings = await PlatformSettings.findOne({ singleton: true });
+        if (!settings) {
+            console.log('Nenhuma configuração de plataforma encontrada. A criar uma com valores padrão...');
+            const defaultPaymentMethods = [
+                { name: 'M-Pesa', number: '840000000', holderName: 'Admin BrainSkill', instructions: 'Envie o valor para este número e submeta o ID da transação.', type: 'M-Pesa' },
+                { name: 'e-Mola', number: '860000000', holderName: 'Admin BrainSkill', instructions: 'Envie o valor para este número e submeta o ID da transação.', type: 'e-Mola' }
+            ];
+            await PlatformSettings.create({ 
+                singleton: true, 
+                paymentMethods: defaultPaymentMethods,
+                mainTexts: { helpPage: config.texts.helpPageContent }
+            });
+            console.log('Configurações padrão criadas.');
         }
-    })
-    .catch(err => console.error('Erro de conexão com MongoDB:', err));
 
-initializeSocket(server);
+    } catch (error) {
+        console.error(`Erro ao conectar ao MongoDB: ${error.message}`);
+        process.exit(1);
+    }
+};
 
-app.use('/api', routes);
+connectDB();
+
+app.use(cors({ origin: '*' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const socketManager = require('./socketManager');
+socketManager(io);
+
+const apiRoutes = require('./routes');
+app.use('/api', apiRoutes);
 
 app.get('/', (req, res) => {
-    res.send('Servidor BrainSkill está a funcionar!');
+    res.setHeader('Content-Type', 'text/html');
+    res.send('<h1>Servidor BrainSkill está a funcionar!</h1>');
 });
 
-server.listen(config.SERVER_PORT, () => {
-    console.log(`Servidor a correr na porta ${config.SERVER_PORT}`);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    process.exit(1);
+const PORT = process.env.PORT || 3000;
+httpServer.listen(PORT, () => {
+    console.log(`Servidor a correr na porta ${PORT}`);
+    const protocol = httpServer.key ? 'https' : 'http';
+    console.log(`Servidor aceita requisições ${protocol}`);
 });
