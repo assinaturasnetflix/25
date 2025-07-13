@@ -1,73 +1,21 @@
 const mongoose = require('mongoose');
+const { generateNumericId, generateTransactionId } = require('./utils');
 const config = require('./config');
 
-const platformSettingsSchema = new mongoose.Schema({
-    singleton: {
-        type: Boolean,
-        default: true,
-        unique: true
-    },
-    commissionRate: {
-        type: Number,
-        default: config.general.platformCommissionRate
-    },
-    minDeposit: {
-        type: Number,
-        default: config.financial.minDeposit
-    },
-    maxDeposit: {
-        type: Number,
-        default: config.financial.maxDeposit
-    },
-    minWithdrawal: {
-        type: Number,
-        default: config.financial.minWithdrawal
-    },
-    maxWithdrawal: {
-        type: Number,
-        default: config.financial.maxWithdrawal
-    },
-    minBet: {
-        type: Number,
-        default: config.financial.minBet
-    },
-    maxBet: {
-        type: Number,
-        default: config.financial.maxBet
-    },
-    paymentDetails: {
-        mpesa: {
-            name: { type: String, default: config.texts.defaultPaymentDetails.mpesa.name },
-            number: { type: String, default: config.texts.defaultPaymentDetails.mpesa.number },
-            instructions: { type: String, default: config.texts.defaultPaymentDetails.mpesa.instructions }
-        },
-        emola: {
-            name: { type: String, default: config.texts.defaultPaymentDetails.emola.name },
-            number: { type: String, default: config.texts.defaultPaymentDetails.emola.number },
-            instructions: { type: String, default: config.texts.defaultPaymentDetails.emola.instructions }
-        }
-    },
-    helpContent: {
-        type: String,
-        default: config.general.defaultHelpContent
-    },
-    platformRules: {
-        type: String,
-        default: config.texts.defaultPlatformRules
-    }
-});
-
 const userSchema = new mongoose.Schema({
-    numericId: {
+    userId: {
         type: String,
-        required: true,
         unique: true,
+        required: true,
+        default: () => generateNumericId(config.ID_LENGTHS.USER)
     },
     username: {
         type: String,
         required: true,
         unique: true,
-        trim: true
+        trim: true,
+        minlength: 3,
+        maxlength: 20
     },
     email: {
         type: String,
@@ -80,23 +28,23 @@ const userSchema = new mongoose.Schema({
         type: String,
         required: true
     },
-    role: {
-        type: String,
-        enum: config.user.roles,
-        default: config.user.defaultRole
-    },
     avatar: {
         type: String,
-        default: config.user.defaultAvatarUrl
+        default: config.DEFAULT_AVATAR_URL
     },
     bio: {
         type: String,
-        default: config.user.defaultBio,
-        maxlength: 250
+        maxlength: 200,
+        default: ''
     },
     balance: {
         type: Number,
         default: 0.00
+    },
+    role: {
+        type: String,
+        enum: ['user', 'admin'],
+        default: 'user'
     },
     isBlocked: {
         type: Boolean,
@@ -104,72 +52,20 @@ const userSchema = new mongoose.Schema({
     },
     stats: {
         wins: { type: Number, default: 0 },
-        losses: { type: Number, default: 0 }
+        losses: { type: Number, default: 0 },
+        draws: { type: Number, default: 0 }
     },
-    passwordResetCode: String,
-    passwordResetExpires: Date,
+    resetPasswordToken: String,
+    resetPasswordExpires: Date,
 }, { timestamps: true });
 
-const matchSchema = new mongoose.Schema({
-    matchId: {
-        type: String,
-        required: true,
-        unique: true,
-    },
-    players: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User'
-    }],
-    boardState: {
-        type: String,
-        required: true
-    },
-    currentPlayer: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User'
-    },
-    status: {
-        type: String,
-        enum: ['waiting', 'in_progress', 'completed', 'cancelled'],
-        default: 'waiting'
-    },
-    betAmount: {
-        type: Number,
-        required: true
-    },
-    winner: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        default: null
-    },
-    loser: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        default: null
-    },
-    timeLimit: {
-        type: String,
-        default: 'none'
-    },
-    lobbyInfo: {
-        description: { type: String, default: '' },
-        createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-    },
-    isPrivate: {
-        type: Boolean,
-        default: false
-    },
-    privateCode: {
-        type: String,
-        default: null
-    }
-}, { timestamps: true });
 
 const transactionSchema = new mongoose.Schema({
     transactionId: {
         type: String,
-        required: true,
         unique: true,
+        required: true,
+        default: () => generateTransactionId(config.ID_LENGTHS.TRANSACTION)
     },
     user: {
         type: mongoose.Schema.Types.ObjectId,
@@ -178,16 +74,16 @@ const transactionSchema = new mongoose.Schema({
     },
     type: {
         type: String,
-        enum: ['deposit', 'withdrawal', 'manual_adjustment'],
-        required: true
-    },
-    amount: {
-        type: Number,
+        enum: ['deposit', 'withdrawal'],
         required: true
     },
     method: {
         type: String,
-        enum: ['M-Pesa', 'e-Mola', 'Platform'],
+        enum: ['M-Pesa', 'e-Mola'],
+        required: true
+    },
+    amount: {
+        type: Number,
         required: true
     },
     status: {
@@ -196,27 +92,139 @@ const transactionSchema = new mongoose.Schema({
         default: 'pending'
     },
     proof: {
-        type: String
+        type: String,
+        required: true
     },
     adminNotes: {
-        type: String
+        type: String,
+        default: ''
     },
-    processedBy: {
+}, { timestamps: true });
+
+
+const gameSchema = new mongoose.Schema({
+    gameId: {
+        type: String,
+        unique: true,
+        required: true,
+    },
+    players: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    boardState: {
+        type: String, 
+        required: true
+    },
+    currentPlayerId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    },
+    status: {
+        type: String,
+        enum: ['waiting_for_opponent', 'in_progress', 'completed', 'cancelled', 'abandoned'],
+        default: 'waiting_for_opponent'
+    },
+    winner: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
+        default: null
+    },
+    betAmount: {
+        type: Number,
+        default: 0
+    },
+    commission: {
+        type: Number,
+        default: 0
+    },
+    moveHistory: [{
+        from: String,
+        to: String,
+        piece: String,
+        captured: [String],
+        timestamp: { type: Date, default: Date.now }
+    }],
+    playerColors: {
+        black: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        white: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    },
+}, { timestamps: true });
+
+
+const lobbyBetSchema = new mongoose.Schema({
+    creator: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    betAmount: {
+        type: Number,
+        required: true
+    },
+    description: {
+        type: String,
+        maxlength: 100,
+        default: "Vamos jogar!"
+    },
+    timeLimit: { 
+        type: Number,
+        default: 0 
+    },
+    status: {
+        type: String,
+        enum: ['open', 'matched', 'cancelled'],
+        default: 'open'
+    },
+    gameId: {
+        type: String,
         default: null
     }
 }, { timestamps: true });
 
 
-const PlatformSettings = mongoose.model('PlatformSettings', platformSettingsSchema);
+const platformConfigSchema = new mongoose.Schema({
+    key: {
+        type: String,
+        default: 'main_config',
+        unique: true
+    },
+    commissionRate: {
+        type: Number,
+        default: config.COMMISSION_RATE
+    },
+    limits: {
+        minDeposit: { type: Number, default: config.LIMITS.MIN_DEPOSIT },
+        maxDeposit: { type: Number, default: config.LIMITS.MAX_DEPOSIT },
+        minWithdrawal: { type: Number, default: config.LIMITS.MIN_WITHDRAWAL },
+        maxWithdrawal: { type: Number, default: config.LIMITS.MAX_WITHDRAWAL },
+        maxBet: { type: Number, default: config.LIMITS.MAX_BET },
+        minBet: { type: Number, default: config.LIMITS.MIN_BET }
+    },
+    paymentMethods: [{
+        name: String,
+        accountName: String,
+        accountNumber: String,
+        instructions: String,
+        isActive: { type: Boolean, default: true }
+    }],
+    platformTexts: {
+        helpPage: { type: String, default: 'Bem-vindo à página de ajuda. Contacte o suporte para mais informações.' },
+        rulesPage: { type: String, default: 'Regras padrão da Dama Brasileira aplicam-se.' }
+    }
+});
+
+
 const User = mongoose.model('User', userSchema);
-const Match = mongoose.model('Match', matchSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
+const Game = mongoose.model('Game', gameSchema);
+const LobbyBet = mongoose.model('LobbyBet', lobbyBetSchema);
+const PlatformConfig = mongoose.model('PlatformConfig', platformConfigSchema);
 
 module.exports = {
-    PlatformSettings,
     User,
-    Match,
-    Transaction
+    Transaction,
+    Game,
+    LobbyBet,
+    PlatformConfig
 };

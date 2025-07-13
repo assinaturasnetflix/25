@@ -1,101 +1,90 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const os = require('os');
-const path = require('path');
-const { User } = require('./models');
-const {
-    authController,
-    userController,
-    walletController,
-    gameController,
-    platformController,
-    adminController,
-} = require('./controllers');
-
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const jwt = require('jsonwebtoken');
+const { User } = require('./models');
+const config = require('./config');
 
-const protect = async (req, res, next) => {
-    let token;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            token = req.headers.authorization.split(' ')[1];
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            req.user = await User.findById(decoded.id).select('-password');
-            if (!req.user) {
-                return res.status(401).json({ message: 'Não autorizado, usuário não encontrado.' });
-            }
-            next();
-        } catch (error) {
-            return res.status(401).json({ message: 'Não autorizado, token falhou.' });
+const controllers = require('./controllers');
+
+const storage = multer.diskStorage({});
+const upload = multer({ 
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        let ext = path.extname(file.originalname).toLowerCase();
+        if (ext !== '.jpg' && ext !== '.jpeg' && ext !== '.png') {
+            return cb(new Error('Apenas imagens são permitidas'), false);
         }
+        cb(null, true);
     }
+});
+
+
+const authMiddleware = async (req, res, next) => {
+    const token = req.header('x-auth-token');
     if (!token) {
-        return res.status(401).json({ message: 'Não autorizado, sem token.' });
+        return res.status(401).json({ message: 'Sem token, autorização negada.' });
+    }
+    try {
+        const decoded = jwt.verify(token, config.JWT.SECRET);
+        req.user = await User.findById(decoded.user.id).select('-password');
+        if (!req.user) {
+             return res.status(401).json({ msg: 'Token não é válido' });
+        }
+        if (req.user.isBlocked) {
+            return res.status(403).json({ message: 'Sua conta está bloqueada.' });
+        }
+        next();
+    } catch (err) {
+        res.status(401).json({ message: 'Token inválido.' });
     }
 };
 
-const admin = (req, res, next) => {
+const adminMiddleware = (req, res, next) => {
     if (req.user && req.user.role === 'admin') {
         next();
     } else {
-        res.status(403).json({ message: 'Acesso negado. Rota de administrador.' });
+        res.status(403).json({ message: 'Acesso negado. Requer privilégios de administrador.' });
     }
 };
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, os.tmpdir());
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-    }
-});
+// Auth Routes
+router.post('/auth/register', controllers.register);
+router.post('/auth/login', controllers.login);
+router.post('/auth/forgot-password', controllers.forgotPassword);
+router.post('/auth/reset-password', controllers.resetPassword);
 
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif/;
-    const mimetype = allowedTypes.test(file.mimetype);
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    if (mimetype && extname) {
-        return cb(null, true);
-    }
-    cb(new Error('Apenas ficheiros de imagem são permitidos.'));
-};
+// User Profile Routes
+router.get('/profile', authMiddleware, controllers.getProfile);
+router.put('/profile', authMiddleware, controllers.updateProfile);
+router.put('/profile/avatar', authMiddleware, upload.single('avatar'), controllers.updateAvatar);
+router.put('/profile/password', authMiddleware, controllers.changePassword);
+router.get('/users/:userId', authMiddleware, controllers.getPublicProfile);
 
-const upload = multer({
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: { fileSize: 1024 * 1024 * 5 }
-});
+// Ranking
+router.get('/ranking', authMiddleware, controllers.getRanking);
 
-router.post('/auth/register', authController.registerUser);
-router.post('/auth/login', authController.loginUser);
-router.post('/auth/forgot-password', authController.forgotPassword);
-router.post('/auth/reset-password', authController.resetPassword);
+// Transaction Routes
+router.post('/transactions/deposit', authMiddleware, upload.single('proofImage'), controllers.requestDeposit);
+router.post('/transactions/withdrawal', authMiddleware, controllers.requestWithdrawal);
+router.get('/transactions', authMiddleware, controllers.getTransactionHistory);
 
-router.get('/users/profile', protect, userController.getProfile);
-router.put('/users/profile', protect, userController.updateProfile);
-router.post('/users/avatar', protect, upload.single('avatar'), userController.uploadAvatar);
-router.get('/users/rankings', userController.getRanking);
-router.get('/users/:numericId', userController.getPublicProfile);
+// Lobby & Game Routes
+router.post('/lobby/bets', authMiddleware, controllers.createLobbyBet);
+router.get('/lobby/bets', authMiddleware, controllers.getLobbyBets);
+router.put('/lobby/bets/:betId/cancel', authMiddleware, controllers.cancelLobbyBet);
+router.get('/games/history', authMiddleware, controllers.getGameHistory);
+router.get('/games/active', authMiddleware, controllers.getActiveGame);
 
-router.get('/wallet', protect, walletController.getWalletInfo);
-router.post('/wallet/deposit', protect, upload.single('proofImage'), walletController.requestDeposit);
-router.post('/wallet/withdraw', protect, walletController.requestWithdrawal);
-router.get('/wallet/payment-details', protect, walletController.getPaymentDetails);
-
-router.get('/games/history', protect, gameController.getMatchHistory);
-router.get('/games/lobby', protect, gameController.getLobbyGames);
-
-router.get('/platform/help', platformController.getHelpPage);
-
-router.get('/admin/users', protect, admin, adminController.getAllUsers);
-router.put('/admin/users/toggle-block/:id', protect, admin, adminController.toggleBlockUser);
-router.get('/admin/transactions', protect, admin, adminController.getAllTransactions);
-router.put('/admin/transactions/:id/process', protect, admin, adminController.processTransaction);
-router.post('/admin/balance/update', protect, admin, adminController.manualBalanceUpdate);
-router.get('/admin/dashboard-stats', protect, admin, adminController.getDashboardStats);
-router.get('/admin/settings', protect, admin, adminController.getPlatformSettings);
-router.put('/admin/settings', protect, admin, adminController.updatePlatformSettings);
+// Admin Routes
+router.get('/admin/users', authMiddleware, adminMiddleware, controllers.getAllUsers);
+router.put('/admin/users/:userId/toggle-block', authMiddleware, adminMiddleware, controllers.toggleUserBlock);
+router.put('/admin/users/:userId/balance', authMiddleware, adminMiddleware, controllers.manualBalanceUpdate);
+router.get('/admin/transactions/pending', authMiddleware, adminMiddleware, controllers.getPendingTransactions);
+router.put('/admin/transactions/:transactionId/process', authMiddleware, adminMiddleware, controllers.processTransaction);
+router.get('/admin/stats', authMiddleware, adminMiddleware, controllers.getPlatformStats);
+router.get('/admin/config', authMiddleware, adminMiddleware, controllers.getPlatformConfig);
+router.put('/admin/config', authMiddleware, adminMiddleware, controllers.updatePlatformConfig);
 
 module.exports = router;

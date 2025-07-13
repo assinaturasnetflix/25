@@ -1,69 +1,49 @@
-require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const { Server } = require('socket.io');
-const { initializeSocketManager } = require('./socketManager');
-const apiRoutes = require('./routes');
-const { PlatformSettings } = require('./models');
+const dotenv = require('dotenv');
+
+dotenv.config();
+
 const config = require('./config');
+const routes = require('./routes');
+const { initializeSocket } = require('./socketManager');
+const { PlatformConfig } = require('./models');
 
 const app = express();
 const server = http.createServer(app);
 
-const corsOptions = {
-    origin: process.env.CORS_ORIGIN || '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-};
+app.use(cors({
+    origin: config.CORS_ORIGIN,
+    credentials: true
+}));
 
-app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const io = new Server(server, {
-    cors: corsOptions,
-    pingInterval: 10000,
-    pingTimeout: 5000,
-    transports: ['websocket', 'polling']
-});
+mongoose.connect(process.env.MONGO_URI)
+    .then(async () => {
+        console.log('MongoDB Conectado...');
+        let platformConfig = await PlatformConfig.findOne({ key: 'main_config' });
+        if (!platformConfig) {
+            console.log('Criando configurações iniciais da plataforma...');
+            platformConfig = new PlatformConfig();
+            await platformConfig.save();
+        }
+    })
+    .catch(err => console.error('Erro de conexão com MongoDB:', err));
 
-initializeSocketManager(io);
+initializeSocket(server);
 
-app.use('/api', apiRoutes);
+app.use('/api', routes);
 
 app.get('/', (req, res) => {
-    res.send(`BrainSkill Server is running. Ready to accept connections.`);
+    res.send('Servidor BrainSkill está a funcionar!');
 });
 
-const PORT = process.env.PORT || 3000;
-
-const connectDB = async () => {
-    try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log('MongoDB Connected...');
-        
-        const settings = await PlatformSettings.findOne({ singleton: true });
-        if (!settings) {
-            console.log('Initializing platform settings...');
-            await PlatformSettings.create({ singleton: true });
-        }
-    } catch (err) {
-        console.error('MongoDB Connection Error:', err.message);
-        process.exit(1);
-    }
-};
-
-connectDB().then(() => {
-    server.listen(PORT, '0.0.0.0', () => {
-        console.log(`Server running on port ${PORT}`);
-        if(process.env.NODE_ENV !== 'production') {
-            console.log(`Development server running at http://localhost:${PORT}`);
-        }
-    });
-}).catch(err => {
-    console.error("Failed to connect to the database, server will not start.", err);
+server.listen(config.SERVER_PORT, () => {
+    console.log(`Servidor a correr na porta ${config.SERVER_PORT}`);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -71,6 +51,6 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception thrown:', error);
+    console.error('Uncaught Exception:', error);
     process.exit(1);
 });
