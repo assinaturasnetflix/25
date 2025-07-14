@@ -75,4 +75,4 @@ router.get('/api/admin/dashboard', authMiddleware, adminMiddleware, adminGetDash
 router.get('/api/admin/settings', authMiddleware, adminMiddleware, adminGetSettings);
 router.put('/api/admin/settings', authMiddleware, adminMiddleware, adminUpdateSettings);
 
-module.exports = router;```
+module.exports = router;
