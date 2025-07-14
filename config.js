@@ -1,37 +1,29 @@
-const platformSettings = {
-    defaultCommissionRate: 0.15, // 15%
-    minDepositAmount: 50,
-    maxDepositAmount: 10000,
-    minWithdrawalAmount: 50,
-    maxWithdrawalAmount: 10000,
-    minBetAmount: 10,
-    maxBetAmount: 5000,
-    passwordResetTokenExpiresIn: 15, // in minutes
-    gameInactiveCancelTime: 1, // in minutes
-    defaultPlayerAvatar: 'user', // Nome do ícone da biblioteca (ex: Feather Icons)
-    platformName: 'BrainSkill',
-    defaultHelpContent: `
-        <h2>Como Jogar</h2>
-        <p>As regras seguem o padrão da Dama Brasileira. A captura é obrigatória.</p>
-        <h2>Depósitos e Levantamentos</h2>
-        <p>Use M-Pesa ou e-Mola. Os depósitos são manuais e precisam ser aprovados por um administrador após o envio do comprovativo.</p>
-        <h2>Comissão</h2>
-        <p>A plataforma cobra uma taxa de 15% sobre os ganhos de cada partida.</p>
-    `,
-    paymentMethods: [
-        {
-            name: "M-Pesa",
-            number: "841234567",
-            holder: "Nome do Titular M-Pesa",
-            instructions: "Envie o valor exato para este número e submeta o ID da transação como comprovativo."
-        },
-        {
-            name: "e-Mola",
-            number: "861234567",
-            holder: "Nome do Titular e-Mola",
-            instructions: "Envie o valor exato para este número e submeta o ID da transação como comprovativo."
-        }
-    ]
+const config = {
+    platformName: "BrainSkill",
+    commissionRate: 0.15,
+    passwordReset: {
+        tokenLife: 15 * 60 * 1000,
+        codeLength: 6,
+    },
+    limits: {
+        minDeposit: 50,
+        maxDeposit: 50000,
+        minWithdrawal: 50,
+        maxWithdrawal: 50000,
+        minBet: 10,
+        maxBet: 10000,
+    },
+    gameSettings: {
+        versusScreenDuration: 5000,
+        afkTimeout: 60000,
+    },
+    defaultAvatar: 'PH9zdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJibGFjayIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJmZWF0aGVyIGZlYXRoZXItdXNlciI+PHBhdGggZD0iTTIwIDIxdi0yYTQgNCAwIDAgMC00LTRIOGE0IDQgMCAwIDAtNCA0djIiPjwvcGF0aD48Y2lyY2xlIGN4PSIxMiIgY3k9IjciIHI9IjQiPjwvY2lyY2xlPjwvc3ZnPg==', // Base64 de um SVG de ícone de usuário
+    platformColors: {
+        dark: '#1a1a1a',
+        light: '#ffffff',
+        accent: '#000000',
+    },
+    font: 'Oswald, sans-serif'
 };
 
-module.exports = platformSettings;
+module.exports = config;

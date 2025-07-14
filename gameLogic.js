@@ -1,221 +1,231 @@
-const EMPTY = 0;
-const P1_PAWN = 1;
-const P2_PAWN = 2;
-const P1_KING = 3;
-const P2_KING = 4;
-
-const isPlayerPiece = (piece, player) => {
-    return (player === 1 && (piece === P1_PAWN || piece === P1_KING)) ||
-           (player === 2 && (piece === P2_PAWN || piece === P2_KING));
+const PIECES = {
+    EMPTY: 0,
+    P1_PAWN: 1,
+    P2_PAWN: 2,
+    P1_KING: 3,
+    P2_KING: 4,
 };
-
-const isOpponentPiece = (piece, player) => {
-    return (player === 1 && (piece === P2_PAWN || piece === P2_KING)) ||
-           (player === 2 && (piece === P1_PAWN || piece === P1_KING));
-};
-
-const isKing = (piece) => piece === P1_KING || piece === P2_KING;
 
 const createInitialBoard = () => {
-    return [
-        [0, 2, 0, 2, 0, 2, 0, 2],
-        [2, 0, 2, 0, 2, 0, 2, 0],
-        [0, 2, 0, 2, 0, 2, 0, 2],
-        [0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0],
-        [1, 0, 1, 0, 1, 0, 1, 0],
-        [0, 1, 0, 1, 0, 1, 0, 1],
-        [1, 0, 1, 0, 1, 0, 1, 0]
-    ];
-};
-
-const findCaptureMovesForPiece = (board, r, c, player, piece, currentPath = []) => {
-    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-    let paths = [];
-
-    const explore = (row, col, path) => {
-        let longestSubPathFound = false;
-        for (const [dr, dc] of directions) {
-            const opponentR = row + dr;
-            const opponentC = col + dc;
-            const landR = row + 2 * dr;
-            const landC = col + 2 * dc;
-
-            if (landR >= 0 && landR < 8 && landC >= 0 && landC < 8 &&
-                board[landR][landC] === EMPTY &&
-                isOpponentPiece(board[opponentR][opponentC], player) &&
-                !path.find(p => p.captured.r === opponentR && p.captured.c === opponentC)) {
-
-                const newBoard = JSON.parse(JSON.stringify(board));
-                newBoard[row][col] = EMPTY;
-                newBoard[opponentR][opponentC] = EMPTY;
-                newBoard[landR][landC] = piece;
-
-                const newPath = [...path, { from: {r: row, c: col}, to: {r: landR, c: landC}, captured: {r: opponentR, c: opponentC} }];
-                
-                longestSubPathFound = true;
-                explore(landR, landC, newPath);
+    const board = Array(8).fill(null).map(() => Array(8).fill(PIECES.EMPTY));
+    for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 8; col++) {
+            if ((row + col) % 2 !== 0) {
+                board[row][col] = PIECES.P2_PAWN;
             }
         }
-        if (!longestSubPathFound && path.length > 0) {
-            paths.push(path);
+    }
+    for (let row = 5; row < 8; row++) {
+        for (let col = 0; col < 8; col++) {
+            if ((row + col) % 2 !== 0) {
+                board[row][col] = PIECES.P1_PAWN;
+            }
         }
-    };
-    
-    if (isKing(piece)) {
-        let kingPaths = [];
-        const exploreKing = (row, col, kBoard, path) => {
-            let pathExtended = false;
-            for (const [dr, dc] of directions) {
-                for (let i = 1; i < 8; i++) {
-                    const opponentR = row + i * dr;
-                    const opponentC = col + i * dc;
-                    const landR = opponentR + dr;
-                    const landC = opponentC + dc;
+    }
+    return board;
+};
 
-                    if (opponentR >= 0 && opponentR < 8 && opponentC >= 0 && opponentC < 8 && landR >= 0 && landR < 8 && landC >= 0 && landC < 8) {
-                        if (isOpponentPiece(kBoard[opponentR][opponentC], player) && kBoard[landR][landC] === EMPTY) {
-                            if (!path.find(p => p.captured.r === opponentR && p.captured.c === opponentC)) {
-                                const newBoard = JSON.parse(JSON.stringify(kBoard));
-                                newBoard[row][col] = EMPTY;
-                                newBoard[opponentR][opponentC] = EMPTY;
-                                
-                                for (let j = 1; landR + (j-1)*dr < 8 && landR + (j-1)*dr >= 0 && landC + (j-1)*dc < 8 && landC + (j-1)*dc >= 0; j++) {
-                                    const finalLandR = landR + (j-1)*dr;
-                                    const finalLandC = landC + (j-1)*dc;
-                                    if(kBoard[finalLandR][finalLandC] !== EMPTY) break;
-                                    
-                                    const landingBoard = JSON.parse(JSON.stringify(newBoard));
-                                    landingBoard[finalLandR][finalLandC] = piece;
-                                    
-                                    const newPath = [...path, { from: {r: row, c: col}, to: {r: finalLandR, c: finalLandC}, captured: {r: opponentR, c: opponentC} }];
-                                    pathExtended = true;
-                                    exploreKing(finalLandR, finalLandC, landingBoard, newPath);
-                                }
-                            }
-                            break;
-                        } else if (kBoard[opponentR][opponentC] !== EMPTY) {
-                            break;
+const isPlayerPiece = (piece, player) => {
+    if (player === 1) return piece === PIECES.P1_PAWN || piece === PIECES.P1_KING;
+    if (player === 2) return piece === PIECES.P2_PAWN || piece === PIECES.P2_KING;
+    return false;
+};
+
+const findCaptureSequences = (board, player) => {
+    let allSequences = [];
+
+    const findJumps = (currentBoard, r, c, currentPath) => {
+        const piece = currentBoard[r][c];
+        const isKing = piece === PIECES.P1_KING || piece === PIECES.P2_KING;
+        let foundJump = false;
+
+        const directions = isKing ? 
+            [[-1, -1], [-1, 1], [1, -1], [1, 1]] :
+            [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+
+        for (const [dr, dc] of directions) {
+            let path = [];
+            let lastR = r, lastC = c;
+
+            if (isKing) {
+                 for (let i = 1; i < 8; i++) {
+                    const middleR = r + i * dr, middleC = c + i * dc;
+                    const landR = r + (i + 1) * dr, landC = c + (i + 1) * dc;
+
+                    if (landR < 0 || landR >= 8 || landC < 0 || landC >= 8) break;
+                    
+                    const middlePiece = currentBoard[middleR][middleC];
+                    const landPiece = currentBoard[landR][landC];
+
+                    if (middlePiece !== PIECES.EMPTY && !isPlayerPiece(middlePiece, player)) {
+                        if (landPiece === PIECES.EMPTY) {
+                            const newBoard = JSON.parse(JSON.stringify(currentBoard));
+                            newBoard[landR][landC] = newBoard[r][c];
+                            newBoard[r][c] = PIECES.EMPTY;
+                            newBoard[middleR][middleC] = PIECES.EMPTY;
+                            foundJump = true;
+                            findJumps(newBoard, landR, landC, [...currentPath, [landR, landC]]);
                         }
-                    } else {
                         break;
+                    }
+                     if (middlePiece !== PIECES.EMPTY) break;
+                }
+            } else {
+                const middleR = r + dr, middleC = c + dc;
+                const landR = r + 2 * dr, landC = c + 2 * dc;
+                
+                if (landR >= 0 && landR < 8 && landC >= 0 && landC < 8) {
+                    const middlePiece = currentBoard[middleR][middleC];
+                    const landPiece = currentBoard[landR][landC];
+
+                    if (landPiece === PIECES.EMPTY && middlePiece !== PIECES.EMPTY && !isPlayerPiece(middlePiece, player)) {
+                        const newBoard = JSON.parse(JSON.stringify(currentBoard));
+                        newBoard[landR][landC] = newBoard[r][c];
+                        newBoard[r][c] = PIECES.EMPTY;
+                        newBoard[middleR][middleC] = PIECES.EMPTY;
+                        foundJump = true;
+                        findJumps(newBoard, landR, landC, [...currentPath, [landR, landC]]);
                     }
                 }
             }
-            if (!pathExtended && path.length > 0) {
-                kingPaths.push(path);
-            }
         }
-        exploreKing(r, c, board, []);
-        return kingPaths;
-    } else {
-        explore(r, c, []);
-        return paths;
-    }
-};
-
-const findPossibleMoves = (board, player) => {
-    let allCapturePaths = [];
-    let simpleMoves = [];
+        
+        if (!foundJump && currentPath.length > 1) {
+            allSequences.push(currentPath);
+        }
+    };
 
     for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
+            if (isPlayerPiece(board[r][c], player)) {
+                findJumps(board, r, c, [[r, c]]);
+            }
+        }
+    }
+    
+    if (allSequences.length === 0) return [];
+    
+    let maxLength = 0;
+    for (const seq of allSequences) {
+        if (seq.length > maxLength) {
+            maxLength = seq.length;
+        }
+    }
+    
+    return allSequences.filter(seq => seq.length === maxLength);
+};
+
+
+const findSimpleMoves = (board, player) => {
+    const moves = [];
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if (!isPlayerPiece(board[r][c], player)) continue;
+
             const piece = board[r][c];
-            if (isPlayerPiece(piece, player)) {
-                const capturePaths = findCaptureMovesForPiece(board, r, c, player, piece);
-                if (capturePaths.length > 0) {
-                    allCapturePaths.push(...capturePaths);
-                }
+            const isKing = piece === PIECES.P1_KING || piece === PIECES.P2_KING;
+            const pawnDir = (player === 1) ? -1 : 1;
+            const directions = isKing ? [[-1, -1], [-1, 1], [1, -1], [1, 1]] : [[pawnDir, -1], [pawnDir, 1]];
 
-                const dr = (player === 1) ? -1 : 1;
-                const directions = isKing(piece) ? [[-1, -1], [-1, 1], [1, -1], [1, 1]] : [[dr, -1], [dr, 1]];
-
-                for (const [dr_move, dc_move] of directions) {
-                    if (isKing(piece)) {
-                         for (let i = 1; i < 8; i++) {
-                            const newR = r + i * dr_move;
-                            const newC = c + i * dc_move;
-                            if (newR >= 0 && newR < 8 && newC >= 0 && newC < 8 && board[newR][newC] === EMPTY) {
-                                simpleMoves.push({ from: { r, c }, to: { r: newR, c: newC }, captures: [] });
-                            } else {
-                                break;
-                            }
+            for (const [dr, dc] of directions) {
+                if(isKing){
+                    for(let i=1; i < 8; i++){
+                        const newR = r + i * dr, newC = c + i * dc;
+                        if (newR >= 0 && newR < 8 && newC >= 0 && newC < 8 && board[newR][newC] === PIECES.EMPTY) {
+                            moves.push([[r, c], [newR, newC]]);
+                        } else {
+                            break;
                         }
-                    } else {
-                        const newR = r + dr_move;
-                        const newC = c + dc_move;
-                        if (newR >= 0 && newR < 8 && newC >= 0 && newC < 8 && board[newR][newC] === EMPTY) {
-                            simpleMoves.push({ from: { r, c }, to: { r: newR, c: newC }, captures: [] });
-                        }
+                    }
+                } else {
+                    const newR = r + dr, newC = c + dc;
+                    if (newR >= 0 && newR < 8 && newC >= 0 && newC < 8 && board[newR][newC] === PIECES.EMPTY) {
+                        moves.push([[r, c], [newR, newC]]);
                     }
                 }
             }
         }
     }
-
-    if (allCapturePaths.length > 0) {
-        const maxCaptures = Math.max(...allCapturePaths.map(path => path.length));
-        return allCapturePaths.filter(path => path.length === maxCaptures).map(path => ({
-            from: path[0].from,
-            to: path[path.length - 1].to,
-            captures: path.map(p => p.captured)
-        }));
-    }
-
-    return simpleMoves;
+    return moves;
 };
 
-const applyMove = (board, move) => {
+const getValidMoves = (board, player) => {
+    const captures = findCaptureSequences(board, player);
+    if (captures.length > 0) {
+        return captures;
+    }
+    return findSimpleMoves(board, player);
+};
+
+const applyMove = (board, moveSequence) => {
     const newBoard = JSON.parse(JSON.stringify(board));
-    const { from, to, captures } = move;
-    const piece = newBoard[from.r][from.c];
+    const startPos = moveSequence[0];
+    const endPos = moveSequence[moveSequence.length - 1];
+    const piece = newBoard[startPos[0]][startPos[1]];
+
+    newBoard[startPos[0]][startPos[1]] = PIECES.EMPTY;
+
+    if (moveSequence.length > 2) { 
+        for (let i = 0; i < moveSequence.length - 1; i++) {
+            const current = moveSequence[i];
+            const next = moveSequence[i+1];
+            const dr = Math.sign(next[0] - current[0]);
+            const dc = Math.sign(next[1] - current[1]);
+            
+            let r = current[0] + dr;
+            let c = current[1] + dc;
+
+            while (r !== next[0] || c !== next[1]) {
+                if(newBoard[r][c] !== PIECES.EMPTY){
+                    newBoard[r][c] = PIECES.EMPTY;
+                    break;
+                }
+                r += dr;
+                c += dc;
+            }
+        }
+    }
+
+    newBoard[endPos[0]][endPos[1]] = piece;
+
+    const player = (piece === PIECES.P1_PAWN || piece === PIECES.P1_KING) ? 1 : 2;
+    if ((player === 1 && endPos[0] === 0 && piece === PIECES.P1_PAWN)) {
+        newBoard[endPos[0]][endPos[1]] = PIECES.P1_KING;
+    }
+    if ((player === 2 && endPos[0] === 7 && piece === PIECES.P2_PAWN)) {
+        newBoard[endPos[0]][endPos[1]] = PIECES.P2_KING;
+    }
     
-    newBoard[to.r][to.c] = newBoard[from.r][from.c];
-    newBoard[from.r][from.c] = EMPTY;
-
-    if (captures) {
-        captures.forEach(cap => {
-            newBoard[cap.r][cap.c] = EMPTY;
-        });
-    }
-
-    const player = (piece === P1_PAWN || piece === P1_KING) ? 1 : 2;
-    if (player === 1 && to.r === 0 && piece === P1_PAWN) {
-        newBoard[to.r][to.c] = P1_KING;
-    } else if (player === 2 && to.r === 7 && piece === P2_PAWN) {
-        newBoard[to.r][to.c] = P2_KING;
-    }
-
     return newBoard;
 };
 
-const checkWinner = (board, nextPlayer) => {
+const checkGameState = (board, nextPlayer) => {
     let p1Pieces = 0;
     let p2Pieces = 0;
+
     for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
             if (isPlayerPiece(board[r][c], 1)) p1Pieces++;
             if (isPlayerPiece(board[r][c], 2)) p2Pieces++;
         }
     }
-    if (p1Pieces === 0) return { winner: 2, loser: 1 };
-    if (p2Pieces === 0) return { winner: 1, loser: 2 };
 
-    const possibleMoves = findPossibleMoves(board, nextPlayer);
-    if (possibleMoves.length === 0) {
-        const winner = nextPlayer === 1 ? 2 : 1;
-        const loser = nextPlayer;
-        return { winner, loser };
-    }
+    if (p1Pieces === 0) return { isGameOver: true, winner: 2 };
+    if (p2Pieces === 0) return { isGameOver: true, winner: 1 };
     
-    return null;
+    const nextPlayerMoves = getValidMoves(board, nextPlayer);
+    if (nextPlayerMoves.length === 0) {
+        return { isGameOver: true, winner: nextPlayer === 1 ? 2 : 1 };
+    }
+
+    return { isGameOver: false, winner: null };
 };
 
-
 module.exports = {
+    PIECES,
     createInitialBoard,
-    findPossibleMoves,
+    getValidMoves,
     applyMove,
-    checkWinner,
-    P1_PAWN, P2_PAWN, P1_KING, P2_KING, EMPTY
+    checkGameState,
+    isPlayerPiece
 };

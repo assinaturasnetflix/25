@@ -1,58 +1,85 @@
-require('dotenv').config();
-const http = require('http');
 const express = require('express');
 const mongoose = require('mongoose');
-const cors = require('cors');
+const http = require('http');
 const { Server } = require('socket.io');
+const dotenv = require('dotenv');
+const cors = require('cors');
+const cloudinary = require('cloudinary').v2;
+const routes = require('./routes');
+const socketManager = require('./socketManager');
+
+dotenv.config({ path: './.env' });
 
 const app = express();
 const server = http.createServer(app);
 
-const io = new Server(server, {
-    cors: {
-        origin: process.env.FRONTEND_URL || '*',
-        methods: ['GET', 'POST']
-    }
-});
-
-const connectDB = async () => {
-    try {
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log('MongoDB Conectado com Sucesso!');
-    } catch (err) {
-        console.error('Falha na conexão com MongoDB:', err.message);
-        process.exit(1);
-    }
+const corsOptions = {
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
 };
 
-connectDB();
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
-app.use(cors({
-    origin: process.env.FRONTEND_URL || '*'
-}));
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-app.use('/api', require('./routes.js'));
-
-require('./socketManager.js')(io);
-
-app.get('/', (req, res) => {
-    res.setHeader('Content-Type', 'text/html');
-    res.send('<h1>BrainSkill Backend</h1><p>Servidor está a postos e a aguardar conecções.</p>');
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
 });
+
+const DB = process.env.MONGO_URI;
+
+mongoose.connect(DB).then(() => {
+    console.log('Conexão com MongoDB estabelecida com sucesso!');
+}).catch(err => {
+    console.error('Erro na conexão com MongoDB:', err.message);
+    process.exit(1);
+});
+
+app.use('/api', routes);
+
+app.use((req, res, next) => {
+    const error = new Error(`Não encontrado - ${req.originalUrl}`);
+    res.status(404);
+    next(error);
+});
+
+app.use((err, req, res, next) => {
+    const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
+    res.status(statusCode);
+    res.json({
+        message: err.message,
+        stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+    });
+});
+
+const io = new Server(server, {
+    cors: {
+        origin: process.env.CORS_ORIGIN || '*',
+        methods: ["GET", "POST"]
+    },
+    connectionStateRecovery: {
+        maxDisconnectionDuration: 2 * 60 * 1000,
+        skipMiddlewares: true,
+    }
+});
+
+socketManager(io);
 
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
-    console.log(`Frontend URL permitida: ${process.env.FRONTEND_URL || '*'}`);
+    console.log(`Servidor a correr em http://localhost:${PORT}`);
 });
 
-// A plataforma Render.com gerencia o HTTPS/SSL.
-// O servidor Node.js só precisa rodar em HTTP.
-// O Render irá receber o tráfego HTTPS na porta 443 e encaminhá-lo
-// como tráfego HTTP para a porta interna do nosso container (PORT).
-// Por isso, criar um servidor HTTPS aqui não é necessário e nem recomendado
-// para este tipo de ambiente de implantação.
+process.on('unhandledRejection', (err) => {
+    console.log('UNHANDLED REJECTION! 💥 Desligando...');
+    console.log(err.name, err.message);
+    server.close(() => {
+        process.exit(1);
+    });
+});
