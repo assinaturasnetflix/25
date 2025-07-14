@@ -3,8 +3,8 @@ const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWi
 const config = require('./config');
 const mongoose = require('mongoose');
 
-let activeLobbies = {}; 
 let activeUsers = {};
+let activeLobbies = {};
 
 const socketManager = (io) => {
     io.on('connection', (socket) => {
@@ -13,14 +13,8 @@ const socketManager = (io) => {
             activeUsers[userId] = socket.id;
             socket.join(userId);
 
-            Game.findOne({ players: userId, status: 'in_progress' })
-                .populate('players', 'username avatar')
-                .then(game => {
-                    if (game) {
-                        socket.join(game.id);
-                        socket.emit('reconnect_game', game);
-                    }
-                });
+            // LÓGICA DE RECONEXÃO AGRESSIVA REMOVIDA DAQUI PARA EVITAR O LOOP DE REDIRECIONAMENTO.
+            // A reconexão agora é tratada quando o cliente entra na página do jogo.
         }
         
         socket.on('join_game_room', async ({ gameId }) => {
@@ -33,7 +27,11 @@ const socketManager = (io) => {
             }
             
             socket.join(gameId);
-            io.to(socket.id).emit('game_state', game);
+
+            // Se o jogo já estiver em progresso, envia o estado para o jogador reconectar.
+            if (game.status === 'in_progress' && game.players.map(p => p.id).includes(userId)) {
+                 io.to(socket.id).emit('game_state', game);
+            }
         });
 
 
@@ -73,7 +71,6 @@ const socketManager = (io) => {
             };
 
             io.emit('lobby_update', Object.values(activeLobbies));
-            // A LINHA DE REDIRECIONAMENTO FOI REMOVIDA DAQUI. O CRIADOR PERMANECE NO LOBBY.
         });
         
         socket.on('create_private_game', async ({ betAmount }) => {
@@ -100,7 +97,6 @@ const socketManager = (io) => {
             });
             await game.save();
             
-            // EMITE UM EVENTO APENAS PARA O CRIADOR MOSTRAR O CÓDIGO, SEM REDIRECIONAR.
             io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.privateGameCode });
         });
 
@@ -123,46 +119,46 @@ const socketManager = (io) => {
             gameToJoin.players.push(joinerId);
             await gameToJoin.save();
 
-            // Adiciona o jogador que entrou (oponente) à sala do jogo
-            socket.join(gameToJoin.id);
-
-            // Adiciona o criador (que estava no lobby) à sala do jogo
-            const creatorSocketId = activeUsers[creatorId];
+            const creatorSocketId = activeUsers[creatorId.toString()];
             if (creatorSocketId) {
                 const creatorSocket = io.sockets.sockets.get(creatorSocketId);
                 if (creatorSocket) {
-                    creatorSocket.join(gameToJoin.id);
+                    creatorSocket.join(gameToJoin.id.toString());
                 }
             }
+            socket.join(gameToJoin.id.toString());
 
             delete activeLobbies[gameToJoin.id];
             io.emit('lobby_update', Object.values(activeLobbies));
             
-            // AGORA SIM: Emite o evento de redirecionamento para TODOS na sala (ambos os jogadores).
-            io.to(gameToJoin.id).emit('navigate_to_game', { gameId: gameToJoin.id });
+            io.to(gameToJoin.id.toString()).emit('navigate_to_game', { gameId: gameToJoin.id });
         });
         
         socket.on('player_ready', async ({ gameId }) => {
             const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const game = await Game.findById(gameId);
-            if (!game || !userId || game.ready.includes(userId)) return;
+
+            if (!game || !userId || game.ready.map(id => id.toString()).includes(userId)) return;
 
             game.ready.push(userId);
-            
+            await game.save();
+
             io.to(gameId).emit('update_ready_status', { userId });
 
-            if (game.players.length === 2 && game.ready.length === 2) {
-                const player1 = await User.findById(game.players[0]);
-                const player2 = await User.findById(game.players[1]);
-                player1.balance -= game.betAmount;
-                player2.balance -= game.betAmount;
+            // A verificação é feita após salvar para garantir consistência
+            const updatedGame = await Game.findById(gameId);
+            if (updatedGame.players.length === 2 && updatedGame.ready.length === 2) {
+                const player1 = await User.findById(updatedGame.players[0]);
+                const player2 = await User.findById(updatedGame.players[1]);
+                player1.balance -= updatedGame.betAmount;
+                player2.balance -= updatedGame.betAmount;
                 await player1.save();
                 await player2.save();
 
-                game.status = 'in_progress';
+                updatedGame.status = 'in_progress';
+                await updatedGame.save();
                 io.to(gameId).emit('game_start_countdown');
             }
-            await game.save();
         });
 
         socket.on('get_possible_moves', async ({gameId, from}) => {
@@ -180,10 +176,8 @@ const socketManager = (io) => {
             const game = await Game.findById(gameId);
             const playerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
 
-            if (!game || !playerId || !game.currentPlayer.equals(playerId)) {
-                return;
-            }
-
+            if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
+            
             const playerSymbol = game.players[0].equals(playerId) ? 'b' : 'w';
             const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
             
@@ -192,9 +186,7 @@ const socketManager = (io) => {
                 JSON.stringify(pMove.to) === JSON.stringify(move.to)
             );
 
-            if (!isValidMove) {
-                return;
-            }
+            if (!isValidMove) return;
             
             const fullMove = possibleMoves.find(pMove => 
                 JSON.stringify(pMove.from) === JSON.stringify(move.from) &&

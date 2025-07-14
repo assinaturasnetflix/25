@@ -146,6 +146,11 @@ const gameSchema = new mongoose.Schema({
         captured: [{ r: Number, c: Number }],
         timestamp: { type: Date, default: Date.now }
     }],
+    // ** ADIÇÃO CRÍTICA AQUI **
+    ready: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }]
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
