@@ -70,18 +70,25 @@ const initializeSocketManager = (io) => {
                 }
                 
                 const game = await Game.create(newGameData);
+                const populatedGameForLobby = await Game.findById(game._id).populate('players', 'name avatar userId');
+                
                 activeGames[game._id.toString()] = { game, readyPlayers: [] };
 
                 if (isPrivate) {
                     socket.emit('private_game_created', { code: game.privateCode, gameId: game._id });
-                } else {
-                    io.emit('lobby_update');
                 }
+                
+                const allGames = await Game.find({ status: 'waiting_for_opponent', isPrivate: false }).populate('players', 'name avatar userId');
+                io.emit('lobby_update', allGames);
                 socket.emit('balance_update', { newBalance: user.balance });
 
             } catch (error) {
                 socket.emit('error_message', { message: error.message });
             }
+        });
+        
+        socket.on('join_versus_screen', ({ gameId }) => {
+            socket.join(gameId);
         });
 
         socket.on('join_game', async ({ gameId, code }) => {
@@ -109,8 +116,8 @@ const initializeSocketManager = (io) => {
                 game.status = 'in_progress';
                 game.boardState = GameLogic.getInitialBoard(creatorId, user._id.toString());
                 
-                const populatedGame = await game.save();
-                await populatedGame.populate('players', 'name avatar userId');
+                await game.save();
+                const populatedGame = await Game.findById(game._id).populate('players', 'name avatar userId');
 
                 activeGames[game._id.toString()] = { game: populatedGame, readyPlayers: [] };
 
@@ -120,7 +127,9 @@ const initializeSocketManager = (io) => {
                 }
                 socket.join(game._id.toString());
                 
-                io.emit('lobby_update');
+                const allGames = await Game.find({ status: 'waiting_for_opponent', isPrivate: false }).populate('players', 'name avatar userId');
+                io.emit('lobby_update', allGames);
+
                 io.to(game._id.toString()).emit('match_found', populatedGame);
 
                 versusTimers[game._id.toString()] = setTimeout(async () => {
@@ -150,11 +159,14 @@ const initializeSocketManager = (io) => {
                     gameData.readyPlayers.push(socket.userId);
                 }
 
+                io.to(gameId).emit('update_ready_status', { readyPlayers: gameData.readyPlayers });
+
                 if (gameData.readyPlayers.length === 2) {
                     if (versusTimers[gameId]) {
                         clearTimeout(versusTimers[gameId]);
                         delete versusTimers[gameId];
                     }
+                    io.to(gameId).emit('start_game_countdown');
                     setTimeout(() => {
                         io.to(gameId).emit('game_start', gameData.game);
                     }, config.game.versusScreenCountdown * 1000);
@@ -234,7 +246,7 @@ const initializeSocketManager = (io) => {
                 socket.emit('error_message', { message: 'Erro ao desistir da partida.' });
             }
         });
-
+        
         socket.on('disconnect', () => {
             if (socket.userId) {
                 delete userSockets[socket.userId];
