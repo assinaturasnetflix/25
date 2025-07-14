@@ -1,301 +1,171 @@
-const { User, Game, Transaction } = require('./models');
-const GameLogic = require('./gameLogic');
-const config = require('./config');
-const { generatePrivateGameCode } = require('./utils');
 const jwt = require('jsonwebtoken');
+const { Game, User, PlatformSettings } = require('./models');
+const { validateMove, applyMove, checkWinCondition } = require('./gameLogic');
+const { calculateCommission } = require('./utils');
+const config = require('./config');
 
-let userSockets = {};
-let activeGames = {};
-let versusTimers = {};
+const socketManager = (io) => {
+    io.use((socket, next) => {
+        if (socket.handshake.auth && socket.handshake.auth.token) {
+            jwt.verify(socket.handshake.auth.token, process.env.JWT_SECRET, (err, decoded) => {
+                if (err) return next(new Error('Authentication error'));
+                socket.decoded = decoded;
+                next();
+            });
+        } else {
+            next(new Error('Authentication error'));
+        }
+    }).on('connection', (socket) => {
 
-const initializeSocketManager = (io) => {
-    io.on('connection', (socket) => {
-        
-        socket.on('authenticate', async (token) => {
-            if (!token) return;
+        socket.on('joinGame', async (gameId) => {
             try {
-                const decoded = jwt.verify(token, process.env.JWT_SECRET);
-                const user = await User.findById(decoded.id);
-                if (!user || user.isBlocked) {
-                    socket.emit('auth_error', { message: 'Autenticação falhou.' });
-                    return socket.disconnect();
+                const game = await Game.findOne({ gameId }).populate('players', 'username avatar');
+                if (!game) {
+                    socket.emit('error', { message: 'Jogo não encontrado.' });
+                    return;
                 }
+                const userId = socket.decoded.id;
+                if (!game.players.some(p => p._id.equals(userId))) {
+                    socket.emit('error', { message: 'Você não faz parte deste jogo.' });
+                    return;
+                }
+
+                socket.join(gameId);
+                socket.userId = userId;
                 
-                socket.userId = user._id.toString();
-                userSockets[socket.userId] = socket.id;
-
-                socket.emit('authenticated');
-
-                const unfinishedGame = await Game.findOne({
-                    players: socket.userId,
-                    status: 'in_progress'
-                }).populate('players', 'name avatar userId');
-
-                if (unfinishedGame) {
-                    socket.join(unfinishedGame._id.toString());
-                    socket.emit('reconnect_game', unfinishedGame);
+                io.to(gameId).emit('playerJoined', { userId, username: game.players.find(p=>p._id.equals(userId)).username });
+                
+                if (game.status === 'waiting' && game.players.length === 2 && !game.isPrivate) {
+                    game.status = 'in_progress';
+                    await game.save();
+                    io.to(gameId).emit('gameStart', game);
+                } else {
+                    socket.emit('gameUpdate', game); 
                 }
 
             } catch (error) {
-                socket.emit('auth_error', { message: 'Token inválido ou expirado.' });
-                socket.disconnect();
+                socket.emit('error', { message: 'Erro interno ao entrar no jogo.' });
             }
         });
 
-        socket.on('create_game', async (data) => {
+        socket.on('playerReady', async (gameId) => {
             try {
-                const { betAmount, description, timeLimit, isPrivate } = data;
-                const user = await User.findById(socket.userId);
-                
-                if (!user || user.isBlocked) throw new Error('Utilizador inválido ou bloqueado.');
-                if (user.balance < betAmount) throw new Error('Saldo insuficiente.');
-                if (betAmount < config.limits.minBet || betAmount > config.limits.maxBet) throw new Error('Valor da aposta fora dos limites permitidos.');
+                const game = await Game.findById(gameId).populate('players', 'username avatar');
+                if (!game || !game.isPrivate) return;
 
-                user.balance -= betAmount;
-                await user.save();
-                
-                let newGameData = {
-                    players: [user._id],
-                    betAmount,
-                    lobbyDescription: description || '',
-                    timeLimit: timeLimit || 'unlimited',
-                    status: 'waiting_for_opponent',
-                    isPrivate,
-                    currentPlayer: user._id,
-                    boardState: "{}",
-                };
-
-                if (isPrivate) {
-                    newGameData.privateCode = generatePrivateGameCode(config.game.privateCodeLength);
+                const userId = socket.decoded.id;
+                if (!game.waitingForConfirmation.some(id => id.equals(userId))) {
+                    game.waitingForConfirmation.push(userId);
+                    await game.save();
                 }
                 
-                const game = await Game.create(newGameData);
-                const populatedGameForLobby = await Game.findById(game._id).populate('players', 'name avatar userId');
-                
-                activeGames[game._id.toString()] = { game, readyPlayers: [] };
+                io.to(game.gameId).emit('readyStatus', { waitingFor: game.waitingForConfirmation });
 
-                if (isPrivate) {
-                    socket.emit('private_game_created', { code: game.privateCode, gameId: game._id });
+                if (game.waitingForConfirmation.length === 2) {
+                    game.status = 'in_progress';
+                    await game.save();
+                    io.to(game.gameId).emit('gameStart', game);
                 }
-                
-                const allGames = await Game.find({ status: 'waiting_for_opponent', isPrivate: false }).populate('players', 'name avatar userId');
-                io.emit('lobby_update', allGames);
-                socket.emit('balance_update', { newBalance: user.balance });
-
             } catch (error) {
-                socket.emit('error_message', { message: error.message });
+                socket.emit('error', { message: 'Erro ao confirmar prontidão.' });
             }
         });
-        
-        socket.on('join_versus_screen', ({ gameId }) => {
-            socket.join(gameId);
-        });
 
-        socket.on('join_game', async ({ gameId, code }) => {
-            try {
-                const user = await User.findById(socket.userId);
-                if (!user || user.isBlocked) throw new Error('Utilizador inválido ou bloqueado.');
-
-                let game;
-                if (gameId) {
-                    game = await Game.findById(gameId);
-                } else if (code) {
-                    game = await Game.findOne({ privateCode: code.toUpperCase() });
-                }
-
-                if (!game || game.status !== 'waiting_for_opponent') throw new Error('Partida não encontrada ou já iniciada.');
-                if (game.players.includes(user._id)) throw new Error('Você não pode entrar na sua própria partida.');
-                if (user.balance < game.betAmount) throw new Error('Saldo insuficiente para entrar nesta aposta.');
-                
-                user.balance -= game.betAmount;
-                await user.save();
-                socket.emit('balance_update', { newBalance: user.balance });
-
-                const creatorId = game.players[0].toString();
-                game.players.push(user._id);
-                game.status = 'in_progress';
-                game.boardState = GameLogic.getInitialBoard(creatorId, user._id.toString());
-                
-                await game.save();
-                const populatedGame = await Game.findById(game._id).populate('players', 'name avatar userId');
-
-                activeGames[game._id.toString()] = { game: populatedGame, readyPlayers: [] };
-
-                const creatorSocketId = userSockets[creatorId];
-                if (creatorSocketId) {
-                    io.sockets.sockets.get(creatorSocketId)?.join(game._id.toString());
-                }
-                socket.join(game._id.toString());
-                
-                const allGames = await Game.find({ status: 'waiting_for_opponent', isPrivate: false }).populate('players', 'name avatar userId');
-                io.emit('lobby_update', allGames);
-
-                io.to(game._id.toString()).emit('match_found', populatedGame);
-
-                versusTimers[game._id.toString()] = setTimeout(async () => {
-                    const gameToCancel = await Game.findById(game._id);
-                    if (gameToCancel && gameToCancel.status === 'in_progress' && activeGames[game._id.toString()] && activeGames[game._id.toString()].readyPlayers.length < 2) {
-                        
-                        await User.findByIdAndUpdate(creatorId, { $inc: { balance: game.betAmount } });
-                        await User.findByIdAndUpdate(user._id, { $inc: { balance: game.betAmount } });
-
-                        gameToCancel.status = 'cancelled';
-                        await gameToCancel.save();
-
-                        io.to(game._id.toString()).emit('game_cancelled', { message: 'O oponente não confirmou a tempo. A partida foi cancelada e o saldo devolvido.' });
-                        delete activeGames[game._id.toString()];
-                    }
-                }, config.game.opponentWaitTimeout * 1000);
-
-            } catch (error) {
-                socket.emit('error_message', { message: error.message });
-            }
-        });
-        
-        socket.on('player_ready', async ({gameId}) => {
-             if (activeGames[gameId]) {
-                const gameData = activeGames[gameId];
-                if (!gameData.readyPlayers.includes(socket.userId)) {
-                    gameData.readyPlayers.push(socket.userId);
-                }
-
-                io.to(gameId).emit('update_ready_status', { readyPlayers: gameData.readyPlayers });
-
-                if (gameData.readyPlayers.length === 2) {
-                    if (versusTimers[gameId]) {
-                        clearTimeout(versusTimers[gameId]);
-                        delete versusTimers[gameId];
-                    }
-                    io.to(gameId).emit('start_game_countdown');
-                    setTimeout(() => {
-                        io.to(gameId).emit('game_start', gameData.game);
-                    }, config.game.versusScreenCountdown * 1000);
-                }
-             }
-        });
-
-        socket.on('make_move', async ({ gameId, move }) => {
+        socket.on('makeMove', async ({ gameId, move }) => {
             try {
                 const game = await Game.findById(gameId);
-                if (!game || game.status !== 'in_progress' || game.currentPlayer.toString() !== socket.userId) {
-                    return socket.emit('invalid_move', { message: 'Não é a sua vez ou a partida não está ativa.' });
+                if (!game || game.status !== 'in_progress') {
+                    socket.emit('error', { message: 'Não é possível fazer a jogada.' });
+                    return;
                 }
 
-                const logic = new GameLogic(game.boardState, socket.userId);
-                const validation = logic.isValidMove(move.from.row, move.from.col, move.to.row, move.to.col, socket.userId);
-
-                if (!validation.valid) {
-                    return socket.emit('invalid_move', { message: validation.reason || 'Movimento inválido.' });
-                }
-                
-                let board = JSON.parse(game.boardState);
-                const piece = board[move.from.row][move.from.col];
-                board[move.to.row][move.to.col] = piece;
-                board[move.from.row][move.from.col] = null;
-                
-                if (validation.isCapture) {
-                    board[validation.capturedPos.row][validation.capturedPos.col] = null;
+                const playerIndex = game.players.findIndex(p => p.equals(socket.userId));
+                if (playerIndex !== game.currentPlayerIndex) {
+                    socket.emit('error', { message: 'Não é a sua vez de jogar.' });
+                    return;
                 }
                 
-                if ((piece.color === 'white' && move.to.row === 0) || (piece.color === 'black' && move.to.row === 7)) {
-                    piece.isKing = true;
-                }
+                const playerNumber = playerIndex + 1;
+                const validationResult = validateMove(game.boardState, move, playerNumber);
 
-                const newBoardState = JSON.stringify(board);
-                const logicAfterMove = new GameLogic(newBoardState, socket.userId);
-                
-                let hasMoreCaptures = false;
-                if (validation.isCapture) {
-                    const availableCaptures = logicAfterMove.getAvailableCaptures(socket.userId);
-                    const movedPieceCaptures = availableCaptures.filter(c => c.from.row === move.to.row && c.from.col === move.to.col);
-                    if (movedPieceCaptures.length > 0) {
-                        hasMoreCaptures = true;
-                    }
-                }
-
-                game.boardState = newBoardState;
-                game.moveHistory.push({ player: socket.userId, from: `${move.from.row},${move.from.col}`, to: `${move.to.row},${move.to.col}`, isCapture: validation.isCapture });
-
-                const winCheck = logicAfterMove.checkWinCondition(socket.userId);
-                if (winCheck.gameOver) {
-                    return await handleGameOver(io, game, winCheck.winner);
-                }
-
-                if (!hasMoreCaptures) {
-                    const opponentId = game.players.find(p => p.toString() !== socket.userId);
-                    game.currentPlayer = opponentId;
+                if (!validationResult.isValid) {
+                    socket.emit('error', { message: validationResult.error });
+                    return;
                 }
                 
-                await game.save();
-                io.to(gameId).emit('game_update', { game, move });
+                game.boardState = applyMove(game.boardState, move, playerNumber);
+                game.moveHistory.push(JSON.stringify(move));
+                
+                const winCondition = checkWinCondition(game.boardState, playerNumber);
+                if (winCondition.isGameOver) {
+                    game.status = 'completed';
+                    game.winner = game.players[playerIndex];
+                    
+                    const settings = await PlatformSettings.findOne();
+                    const commissionRate = settings ? settings.commissionRate : config.commissionRate;
+                    const { netAmount } = calculateCommission(game.betAmount * 2, commissionRate);
+                    
+                    const winnerUser = await User.findById(game.winner);
+                    winnerUser.balance += netAmount;
+                    winnerUser.stats.wins += 1;
+                    
+                    const loserIndex = (playerIndex === 0) ? 1 : 0;
+                    const loserUser = await User.findById(game.players[loserIndex]);
+                    loserUser.stats.losses += 1;
+                    
+                    await game.save();
+                    await winnerUser.save();
+                    await loserUser.save();
+                    
+                    io.to(game.gameId).emit('gameOver', { game, winner: winnerUser, loser: loserUser });
 
+                } else {
+                    game.currentPlayerIndex = (game.currentPlayerIndex === 0) ? 1 : 0;
+                    await game.save();
+                    io.to(game.gameId).emit('moveMade', game);
+                }
             } catch (error) {
-                socket.emit('error_message', { message: 'Ocorreu um erro ao processar a jogada.' });
+                 socket.emit('error', { message: 'Erro ao processar jogada.' });
             }
         });
 
-        socket.on('forfeit_game', async ({ gameId }) => {
+        socket.on('surrender', async (gameId) => {
             try {
                 const game = await Game.findById(gameId);
                 if (!game || game.status !== 'in_progress') return;
+
+                const loserIndex = game.players.findIndex(p => p.equals(socket.userId));
+                if (loserIndex === -1) return;
+
+                const winnerIndex = (loserIndex === 0) ? 1 : 0;
+                game.status = 'completed';
+                game.winner = game.players[winnerIndex];
                 
-                const winnerId = game.players.find(p => p.toString() !== socket.userId).toString();
-                await handleGameOver(io, game, winnerId);
+                const settings = await PlatformSettings.findOne();
+                const commissionRate = settings ? settings.commissionRate : config.commissionRate;
+                const { netAmount } = calculateCommission(game.betAmount * 2, commissionRate);
+
+                const winnerUser = await User.findById(game.winner);
+                winnerUser.balance += netAmount;
+                winnerUser.stats.wins += 1;
+                
+                const loserUser = await User.findById(game.players[loserIndex]);
+                loserUser.stats.losses += 1;
+                
+                await game.save();
+                await winnerUser.save();
+                await loserUser.save();
+
+                io.to(game.gameId).emit('gameOver', { game, winner: winnerUser, loser: loserUser, surrendered: true });
 
             } catch (error) {
-                socket.emit('error_message', { message: 'Erro ao desistir da partida.' });
+                socket.emit('error', { message: 'Erro ao desistir.' });
             }
         });
-        
+
         socket.on('disconnect', () => {
-            if (socket.userId) {
-                delete userSockets[socket.userId];
-            }
         });
     });
 };
 
-const handleGameOver = async (io, game, winnerId) => {
-    if (game.status === 'completed') return;
-
-    const loserId = game.players.find(p => p.toString() !== winnerId.toString()).toString();
-    const winner = await User.findById(winnerId);
-    const loser = await User.findById(loserId);
-
-    const totalPot = game.betAmount * 2;
-    const commission = totalPot * config.commission.rate;
-    const prize = totalPot - commission;
-
-    winner.balance += prize;
-    winner.stats.wins += 1;
-    loser.stats.losses += 1;
-
-    game.status = 'completed';
-    game.winner = winnerId;
-    
-    await Promise.all([winner.save(), loser.save(), game.save()]);
-
-    await Transaction.create([
-        { user: winner._id, type: 'win', amount: prize, status: 'completed', relatedGame: game._id },
-        { user: loser._id, type: 'bet', amount: -game.betAmount, status: 'completed', relatedGame: game._id },
-        { user: winner._id, type: 'bet', amount: -game.betAmount, status: 'completed', relatedGame: game._id },
-        { type: 'commission', amount: commission, status: 'completed', relatedGame: game._id }
-    ]);
-
-    const populatedGame = await Game.findById(game._id).populate('players', 'name avatar userId').populate('winner', 'name userId');
-    io.to(game._id.toString()).emit('game_over', { game: populatedGame });
-    
-    const winnerSocketId = userSockets[winnerId];
-    if (winnerSocketId) {
-        io.sockets.sockets.get(winnerSocketId)?.emit('balance_update', { newBalance: winner.balance });
-    }
-    const loserSocketId = userSockets[loserId];
-    if (loserSocketId) {
-        io.sockets.sockets.get(loserSocketId)?.emit('balance_update', { newBalance: loser.balance });
-    }
-
-    delete activeGames[game._id.toString()];
-    delete versusTimers[game._id.toString()];
-};
-
-module.exports = { initializeSocketManager };
+module.exports = socketManager;

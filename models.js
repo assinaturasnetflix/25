@@ -1,201 +1,232 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const { generateNumericId } = require('./utils');
 const config = require('./config');
 
-const userSchema = new mongoose.Schema({
-    userId: {
+const UserSchema = new mongoose.Schema({
+    username: {
         type: String,
-        unique: true,
         required: true,
-        default: () => generateNumericId(config.ids.user.length)
-    },
-    name: {
-        type: String,
-        required: [true, 'Por favor, insira um nome'],
+        unique: true,
+        trim: true
     },
     email: {
         type: String,
-        required: [true, 'Por favor, insira um email'],
+        required: true,
         unique: true,
-        match: [
-            /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
-            'Por favor, insira um email válido',
-        ],
+        lowercase: true,
+        trim: true
     },
     password: {
         type: String,
-        required: [true, 'Por favor, insira uma senha'],
-        minlength: 6,
-        select: false,
+        required: true
     },
     avatar: {
-        public_id: {
-            type: String,
-            default: null,
-        },
-        url: {
-            type: String,
-            default: null,
-        },
+        type: String,
+        default: config.defaultAvatar
     },
     bio: {
         type: String,
-        maxlength: 200,
-        default: config.defaults.user.bio,
+        maxlength: 250,
+        default: ''
     },
     balance: {
         type: Number,
         default: 0,
-        min: 0,
+        min: 0
     },
     role: {
         type: String,
         enum: ['user', 'admin'],
-        default: 'user',
-    },
-    isBlocked: {
-        type: Boolean,
-        default: false,
+        default: 'user'
     },
     stats: {
-        wins: { type: Number, default: 0 },
-        losses: { type: Number, default: 0 },
-        draws: { type: Number, default: 0 },
+        wins: {
+            type: Number,
+            default: 0
+        },
+        losses: {
+            type: Number,
+            default: 0
+        },
     },
     passwordResetCode: String,
     passwordResetExpires: Date,
+    isBlocked: {
+        type: Boolean,
+        default: false
+    }
 }, {
-    timestamps: true,
+    timestamps: true
 });
 
-userSchema.pre('save', async function (next) {
+UserSchema.pre('save', async function(next) {
     if (!this.isModified('password')) {
-        next();
+        return next();
     }
     const salt = await bcrypt.genSalt(10);
     this.password = await bcrypt.hash(this.password, salt);
+    next();
 });
 
-userSchema.methods.matchPassword = async function (enteredPassword) {
-    return await bcrypt.compare(enteredPassword, this.password);
+UserSchema.methods.comparePassword = async function(candidatePassword) {
+    return await bcrypt.compare(candidatePassword, this.password);
 };
 
-const transactionSchema = new mongoose.Schema({
-    transactionId: {
-        type: String,
-        unique: true,
-        required: true,
-        default: () => `txn_${generateNumericId(config.ids.transaction.length)}`
-    },
-    user: {
+const TransactionSchema = new mongoose.Schema({
+    userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
+        required: true
+    },
+    transactionId: {
+        type: String,
         required: true,
+        unique: true
     },
     type: {
         type: String,
-        enum: ['deposit', 'withdrawal', 'bet', 'win', 'refund', 'commission', 'admin_credit', 'admin_debit'],
-        required: true,
+        enum: ['deposit', 'withdrawal'],
+        required: true
     },
     method: {
         type: String,
-        enum: ['M-Pesa', 'e-Mola', 'platform', null],
-        default: null,
+        enum: ['M-Pesa', 'e-Mola'],
+        required: true
     },
     amount: {
         type: Number,
         required: true,
+        min: 0
     },
     status: {
         type: String,
-        enum: ['pending', 'approved', 'rejected', 'completed'],
-        required: true,
+        enum: ['pending', 'approved', 'rejected'],
+        default: 'pending'
     },
     proof: {
-        type: {
-            type: String,
-            enum: ['text', 'image', 'none'],
-            default: 'none',
-        },
-        content: {
-            type: String,
-            default: '',
-        },
+        type: String,
+        required: true
     },
     adminNotes: {
         type: String,
-        default: '',
-    },
-    relatedGame: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Game',
-        default: null
-    },
-}, {
-    timestamps: true
-});
-
-const gameSchema = new mongoose.Schema({
-    players: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
-    }],
-    boardState: {
-        type: String,
-        required: true,
-    },
-    currentPlayer: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
-    },
-    status: {
-        type: String,
-        enum: ['waiting_for_opponent', 'in_progress', 'completed', 'cancelled', 'pending_rematch'],
-        default: 'waiting_for_opponent',
-    },
-    winner: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        default: null,
-    },
-    betAmount: {
-        type: Number,
-        required: true,
-    },
-    isPrivate: {
-        type: Boolean,
-        default: false,
-    },
-    privateCode: {
-        type: String,
-        unique: true,
-        sparse: true,
-    },
-    timeLimit: {
-        type: String,
-        default: 'unlimited', // e.g., "15_minutes", "1_hour"
-    },
-    moveHistory: [{
-        player: mongoose.Schema.Types.ObjectId,
-        from: String,
-        to: String,
-        isCapture: Boolean,
-        timestamp: { type: Date, default: Date.now },
-    }],
-    lobbyDescription: {
-        type: String,
-        maxlength: 100,
-        default: '',
+        default: ''
     }
 }, {
     timestamps: true
 });
 
-const User = mongoose.model('User', userSchema);
-const Transaction = mongoose.model('Transaction', transactionSchema);
-const Game = mongoose.model('Game', gameSchema);
+const GameSchema = new mongoose.Schema({
+    gameId: {
+        type: String,
+        required: true,
+        unique: true
+    },
+    players: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    creator: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true
+    },
+    boardState: {
+        type: String,
+        required: true
+    },
+    currentPlayerIndex: {
+        type: Number,
+        default: 0
+    },
+    status: {
+        type: String,
+        enum: ['waiting', 'in_progress', 'completed', 'abandoned'],
+        default: 'waiting'
+    },
+    betAmount: {
+        type: Number,
+        required: true,
+        min: 0
+    },
+    winner: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+    },
+    isPrivate: {
+        type: Boolean,
+        default: false
+    },
+    lobbyDescription: {
+        type: String,
+        default: ''
+    },
+    gameTime: {
+        type: String,
+        default: 'sem tempo'
+    },
+    waitingForConfirmation: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
+    moveHistory: [{
+        type: String
+    }]
+}, {
+    timestamps: true
+});
 
-module.exports = { User, Transaction, Game };
+const PlatformSettingsSchema = new mongoose.Schema({
+    singleton: {
+        type: Boolean,
+        default: true,
+        unique: true
+    },
+    commissionRate: {
+        type: Number,
+        default: config.commissionRate
+    },
+    minDeposit: {
+        type: Number,
+        default: config.minDeposit
+    },
+    maxDeposit: {
+        type: Number,
+        default: config.maxDeposit
+    },
+    minWithdrawal: {
+        type: Number,
+        default: config.minWithdrawal
+    },
+    maxWithdrawal: {
+        type: Number,
+        default: config.maxWithdrawal
+    },
+    maxBet: {
+        type: Number,
+        default: config.maxBet
+    },
+    paymentMethods: [{
+        name: String,
+        instructions: String,
+        number: String,
+        holder: String
+    }],
+    platformTexts: {
+        welcome: String,
+        about: String,
+        rules: String
+    }
+});
+
+const User = mongoose.model('User', UserSchema);
+const Transaction = mongoose.model('Transaction', TransactionSchema);
+const Game = mongoose.model('Game', GameSchema);
+const PlatformSettings = mongoose.model('PlatformSettings', PlatformSettingsSchema);
+
+module.exports = {
+    User,
+    Transaction,
+    Game,
+    PlatformSettings
+};

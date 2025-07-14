@@ -1,285 +1,288 @@
-class GameLogic {
-    constructor(boardState, currentPlayerId) {
-        this.board = this.parseBoardState(boardState);
-        this.currentPlayerColor = this.getPlayerColor(currentPlayerId);
-    }
+const EMPTY = 0;
+const P1_MAN = 1;
+const P2_MAN = 2;
+const P1_KING = 3;
+const P2_KING = 4;
 
-    parseBoardState(boardState) {
-        return JSON.parse(boardState);
-    }
+const BOARD_SIZE = 8;
 
-    getPlayerColor(playerId) {
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board[r][c];
-                if (piece && piece.playerId === playerId) {
-                    return piece.color;
-                }
+const createInitialBoard = () => {
+    const board = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY));
+    for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < BOARD_SIZE; col++) {
+            if ((row + col) % 2 !== 0) {
+                board[row][col] = P2_MAN;
             }
         }
-        return null;
     }
-
-    isValidMove(fromRow, fromCol, toRow, toCol, playerId) {
-        const piece = this.board[fromRow][fromCol];
-        if (!piece || piece.playerId !== playerId) {
-            return { valid: false, reason: 'Peça inválida ou não pertence ao jogador.' };
-        }
-
-        const availableCaptures = this.getAvailableCaptures(playerId);
-
-        if (availableCaptures.length > 0) {
-            const isMoveACapture = availableCaptures.some(move =>
-                move.from.row === fromRow && move.from.col === fromCol &&
-                move.to.row === toRow && move.to.col === toCol
-            );
-            if (!isMoveACapture) {
-                return { valid: false, reason: 'Captura obrigatória disponível.' };
-            }
-            const bestCaptureSequence = this.findBestCaptureSequence(fromRow, fromCol);
-            const moveCaptures = Math.abs(toRow - fromRow) / 2;
-            if (moveCaptures < bestCaptureSequence.captures) {
-                 return { valid: false, reason: 'Deve escolher a jogada com o maior número de capturas.' };
+    for (let row = 5; row < BOARD_SIZE; row++) {
+        for (let col = 0; col < BOARD_SIZE; col++) {
+            if ((row + col) % 2 !== 0) {
+                board[row][col] = P1_MAN;
             }
         }
-
-        const dx = toCol - fromCol;
-        const dy = toRow - fromRow;
-        const absDx = Math.abs(dx);
-        const absDy = Math.abs(dy);
-
-        if (piece.isKing) {
-            return this.isValidKingMove(fromRow, fromCol, toRow, toCol, dx, dy, absDx, absDy, availableCaptures.length > 0);
-        } else {
-            return this.isValidPawnMove(fromRow, fromCol, toRow, toCol, dy, absDx, absDy, piece.color, availableCaptures.length > 0);
-        }
     }
+    return serializeBoard(board);
+};
 
-    isValidPawnMove(fromRow, fromCol, toRow, toCol, dy, absDx, absDy, color, isCaptureMandatory) {
-        const forward = color === 'black' ? 1 : -1;
+const serializeBoard = (board) => board.map(row => row.join(',')).join(';');
+const deserializeBoard = (boardString) => boardString.split(';').map(rowStr => rowStr.split(',').map(Number));
 
-        if (isCaptureMandatory) {
-            if (absDx !== 2 || absDy !== 2) return { valid: false };
-            const midRow = fromRow + (toRow - fromRow) / 2;
-            const midCol = fromCol + (toCol - fromCol) / 2;
-            const capturedPiece = this.board[midRow][midCol];
-            if (!capturedPiece || capturedPiece.color === color) return { valid: false };
-            return { valid: true, isCapture: true, capturedPos: { row: midRow, col: midCol } };
-        } else {
-            if (absDx !== 1 || dy !== forward) return { valid: false };
-            if (this.board[toRow][toCol]) return { valid: false };
-            return { valid: true, isCapture: false };
-        }
-    }
+const isPlayerPiece = (piece, player) => {
+    return (player === 1 && (piece === P1_MAN || piece === P1_KING)) ||
+           (player === 2 && (piece === P2_MAN || piece === P2_KING));
+};
 
-    isValidKingMove(fromRow, fromCol, toRow, toCol, dx, dy, absDx, absDy, isCaptureMandatory) {
-        if (absDx !== absDy) return { valid: false };
+const isKing = (piece) => piece === P1_KING || piece === P2_KING;
+const isMan = (piece) => piece === P1_MAN || piece === P2_MAN;
+const getOpponent = (player) => (player === 1) ? 2 : 1;
 
-        const stepX = dx / absDx;
-        const stepY = dy / absDy;
-        let capturedPieces = [];
-        let pathIsClear = true;
-        let opponentPieceEncountered = null;
+const findCaptureSequences = (board, startRow, startCol, player) => {
+    const piece = board[startRow][startCol];
+    const directions = [
+        [-1, -1], [-1, 1], [1, -1], [1, 1]
+    ];
+    let allSequences = [];
 
-        for (let i = 1; i < absDx; i++) {
-            const currRow = fromRow + i * stepY;
-            const currCol = fromCol + i * stepX;
-            const pieceOnPath = this.board[currRow][currCol];
+    const findPaths = (currentPath, currentBoard) => {
+        const lastPos = currentPath[currentPath.length - 1];
+        const [r, c] = lastPos;
+        let foundNewCapture = false;
 
-            if (pieceOnPath) {
-                if (pieceOnPath.color !== this.currentPlayerColor) {
-                    if (opponentPieceEncountered) {
-                        pathIsClear = false;
-                        break;
+        for (const [dr, dc] of directions) {
+            if (isKing(piece)) {
+                for (let i = 1; ; i++) {
+                    const jumpOverR = r + i * dr;
+                    const jumpOverC = c + i * dc;
+                    const landR = r + (i + 1) * dr;
+                    const landC = c + (i + 1) * dc;
+
+                    if (landR < 0 || landR >= BOARD_SIZE || landC < 0 || landC >= BOARD_SIZE) break;
+
+                    const jumpedPiece = currentBoard[jumpOverR][jumpOverC];
+                    if (isPlayerPiece(jumpedPiece, getOpponent(player))) {
+                         for (let j = i + 1; ; j++) {
+                            const newLandR = r + j * dr;
+                            const newLandC = c + j * dc;
+                            if (newLandR < 0 || newLandR >= BOARD_SIZE || newLandC < 0 || newLandC >= BOARD_SIZE) break;
+
+                            if (currentBoard[newLandR][newLandC] === EMPTY) {
+                                foundNewCapture = true;
+                                const nextBoard = currentBoard.map(row => [...row]);
+                                nextBoard[newLandR][newLandC] = piece;
+                                nextBoard[r][c] = EMPTY;
+                                nextBoard[jumpOverR][jumpOverC] = EMPTY;
+                                findPaths([...currentPath, [newLandR, newLandC]], nextBoard);
+                            } else {
+                                break;
+                            }
+                         }
+                         break;
                     }
-                    opponentPieceEncountered = { piece: pieceOnPath, row: currRow, col: currCol };
-                    capturedPieces.push(opponentPieceEncountered);
-                } else {
-                    pathIsClear = false;
-                    break;
+                     if (currentBoard[jumpOverR][jumpOverC] !== EMPTY) break;
                 }
             } else {
-                if (opponentPieceEncountered) { // Path must be clear after a captured piece
-                     pathIsClear = false;
-                     break;
+                const jumpOverR = r + dr;
+                const jumpOverC = c + dc;
+                const landR = r + 2 * dr;
+                const landC = c + 2 * dc;
+
+                if (landR >= 0 && landR < BOARD_SIZE && landC >= 0 && landC < BOARD_SIZE &&
+                    currentBoard[landR][landC] === EMPTY &&
+                    isPlayerPiece(currentBoard[jumpOverR][jumpOverC], getOpponent(player))) {
+                    
+                    foundNewCapture = true;
+                    const nextBoard = currentBoard.map(row => [...row]);
+                    nextBoard[landR][landC] = piece;
+                    nextBoard[r][c] = EMPTY;
+                    nextBoard[jumpOverR][jumpOverC] = EMPTY;
+                    findPaths([...currentPath, [landR, landC]], nextBoard);
                 }
             }
         }
 
-        if (!pathIsClear || (isCaptureMandatory && !opponentPieceEncountered)) {
-            return { valid: false };
-        }
-        
-        if (isCaptureMandatory && capturedPieces.length > 1) {
-            return { valid: false, reason: 'Dama só pode capturar uma peça por movimento.' };
-        }
-
-        return { valid: true, isCapture: !!opponentPieceEncountered, capturedPos: opponentPieceEncountered ? { row: opponentPieceEncountered.row, col: opponentPieceEncountered.col } : null };
-    }
-    
-    findBestCaptureSequence(startRow, startCol) {
-        let maxCaptures = 0;
-        const sequences = this.findAllCaptureSequences(startRow, startCol, this.board);
-        for (const seq of sequences) {
-            if (seq.length > maxCaptures) {
-                maxCaptures = seq.length;
+        if (!foundNewCapture) {
+            if (currentPath.length > 1) {
+                allSequences.push(currentPath);
             }
         }
-        return { captures: maxCaptures };
-    }
+    };
 
-    findAllCaptureSequences(row, col, board, sequence = []) {
-        const piece = board[row][col];
-        if (!piece) return [sequence];
+    findPaths([
+        [startRow, startCol]
+    ], board);
+    return allSequences;
+};
 
-        const directions = piece.isKing
-            ? [[-1,-1], [-1,1], [1,-1], [1,1]]
-            : [[-1,-1], [-1,1], [1,-1], [1,1]];
-
-        let allSequences = [];
-        let hasMoreCaptures = false;
-
-        for (const [dr, dc] of directions) {
-            if (!piece.isKing && (piece.color === 'black' ? dr < 0 : dr > 0)) {
-                 // Pawns only capture forward
-            }
-
-            const opponentRow = row + dr;
-            const opponentCol = col + dc;
-            const landRow = row + 2 * dr;
-            const landCol = col + 2 * dc;
-
-            if (this.isWithinBounds(landRow, landCol) && board[landRow][landCol] === null) {
-                const opponentPiece = this.isWithinBounds(opponentRow, opponentCol) ? board[opponentRow][opponentCol] : null;
-                if (opponentPiece && opponentPiece.color !== piece.color) {
-                     const newBoard = JSON.parse(JSON.stringify(board));
-                     newBoard[landRow][landCol] = newBoard[row][col];
-                     newBoard[row][col] = null;
-                     newBoard[opponentRow][opponentCol] = null;
-                     
-                     const newSequence = [...sequence, { from: {row, col}, to: {row: landRow, col: landCol} }];
-                     allSequences.push(...this.findAllCaptureSequences(landRow, landCol, newBoard, newSequence));
-                     hasMoreCaptures = true;
+const findAllPlayerCaptures = (board, player) => {
+    let allCaptures = [];
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (isPlayerPiece(board[r][c], player)) {
+                const sequences = findCaptureSequences(board, r, c, player);
+                if (sequences.length > 0) {
+                    allCaptures.push(...sequences);
                 }
             }
         }
-        
-        if (!hasMoreCaptures) {
-            allSequences.push(sequence);
-        }
-        
-        return allSequences;
     }
+    return allCaptures;
+};
 
+const findAllPlayerMoves = (board, player) => {
+    const moves = [];
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            const piece = board[r][c];
+            if (!isPlayerPiece(piece, player)) continue;
 
-    getAvailableCaptures(playerId) {
-        const playerColor = this.getPlayerColor(playerId);
-        let captures = [];
-        let maxCaptures = 0;
+            const moveDirs = isKing(piece) ? [
+                [-1, -1], [-1, 1], [1, -1], [1, 1]
+            ] : (player === 1 ? [
+                [-1, -1], [-1, 1]
+            ] : [
+                [1, -1], [1, 1]
+            ]);
 
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board[r][c];
-                if (piece && piece.playerId === playerId) {
-                    const sequences = this.findAllCaptureSequences(r, c, this.board);
-                    for (const seq of sequences) {
-                        if (seq.length > maxCaptures) {
-                            maxCaptures = seq.length;
-                            captures = []; // Reset captures with a new max length
+            for (const [dr, dc] of moveDirs) {
+                if (isKing(piece)) {
+                    for (let i = 1; ; i++) {
+                        const newR = r + i * dr;
+                        const newC = c + i * dc;
+                        if (newR < 0 || newR >= BOARD_SIZE || newC < 0 || newC >= BOARD_SIZE || board[newR][newC] !== EMPTY) {
+                            break;
                         }
-                        if (seq.length > 0 && seq.length === maxCaptures) {
-                            captures.push(seq[0]); // Only the first move of the sequence matters
-                        }
+                        moves.push([[r, c], [newR, newC]]);
+                    }
+                } else {
+                    const newR = r + dr;
+                    const newC = c + dc;
+                    if (newR >= 0 && newR < BOARD_SIZE && newC >= 0 && newC < BOARD_SIZE && board[newR][newC] === EMPTY) {
+                        moves.push([[r, c], [newR, newC]]);
                     }
                 }
             }
         }
-        return captures;
+    }
+    return moves;
+};
+
+
+const validateMove = (boardString, move, player) => {
+    const board = deserializeBoard(boardString);
+    const [startPos, ...restPath] = move;
+    const [startRow, startCol] = startPos;
+    const endPos = restPath[restPath.length - 1];
+
+    if (!isPlayerPiece(board[startRow][startCol], player)) {
+        return { isValid: false, error: "Not your piece." };
     }
 
-    isWithinBounds(row, col) {
-        return row >= 0 && row < 8 && col >= 0 && col < 8;
+    const allCaptures = findAllPlayerCaptures(board, player);
+
+    if (allCaptures.length > 0) {
+        const isMoveACapture = move.length > 2 || (move.length === 2 && Math.abs(move[0][0] - move[1][0]) > 1);
+        if(!isMoveACapture) return { isValid: false, error: "Capture is mandatory." };
+        
+        const maxCaptureLength = Math.max(...allCaptures.map(seq => seq.length));
+
+        if (move.length < maxCaptureLength) {
+            return { isValid: false, error: "You must choose the longest capture sequence." };
+        }
+
+        const isValidCaptureSequence = allCaptures.some(seq => 
+            seq.length === move.length && seq.every((pos, i) => pos[0] === move[i][0] && pos[1] === move[i][1])
+        );
+
+        if (!isValidCaptureSequence) {
+             return { isValid: false, error: "Invalid capture sequence." };
+        }
+
+    } else {
+        if (move.length !== 2) return { isValid: false, error: "Invalid move format." };
+        const allMoves = findAllPlayerMoves(board, player);
+        const isValidSimpleMove = allMoves.some(m => 
+            m[0][0] === startRow && m[0][1] === startCol && m[1][0] === endPos[0] && m[1][1] === endPos[1]
+        );
+        if (!isValidSimpleMove) return { isValid: false, error: "Invalid move." };
     }
 
-    checkWinCondition(playerId) {
-        const opponentId = this.getOpponentId(playerId);
-        let opponentPieceCount = 0;
-        let opponentHasMoves = false;
+    return { isValid: true };
+};
 
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board[r][c];
-                if (piece && piece.playerId === opponentId) {
-                    opponentPieceCount++;
-                    if (this.hasValidMoves(r, c)) {
-                        opponentHasMoves = true;
-                        break;
-                    }
+
+const applyMove = (boardString, move, player) => {
+    const board = deserializeBoard(boardString);
+    const [startPos, ...path] = move;
+    const [startRow, startCol] = startPos;
+    const endPos = path[path.length - 1];
+    const [endRow, endCol] = endPos;
+    
+    let piece = board[startRow][startCol];
+    board[startRow][startCol] = EMPTY;
+
+    if ((player === 1 && endRow === 0) || (player === 2 && endRow === BOARD_SIZE - 1)) {
+        piece = (player === 1) ? P1_KING : P2_KING;
+    }
+
+    board[endRow][endCol] = piece;
+
+    if (move.length > 2 || Math.abs(startRow - endRow) > 1) {
+        for(let i = 0; i < path.length; i++) {
+            const prevPos = i === 0 ? startPos : path[i-1];
+            const currentPos = path[i];
+            const dr = Math.sign(currentPos[0] - prevPos[0]);
+            const dc = Math.sign(currentPos[1] - prevPos[1]);
+            
+            let r = prevPos[0] + dr;
+            let c = prevPos[1] + dc;
+
+            while(r !== currentPos[0] || c !== currentPos[1]) {
+                if(board[r][c] !== EMPTY) {
+                    board[r][c] = EMPTY;
+                    break;
                 }
+                r += dr;
+                c += dc;
             }
-            if (opponentHasMoves) break;
         }
+    }
+    return serializeBoard(board);
+};
 
-        if (opponentPieceCount === 0 || !opponentHasMoves) {
-            return { gameOver: true, winner: playerId };
+const checkWinCondition = (boardString, player) => {
+    const board = deserializeBoard(boardString);
+    const opponent = getOpponent(player);
+
+    const opponentCaptures = findAllPlayerCaptures(board, opponent);
+    const opponentMoves = findAllPlayerMoves(board, opponent);
+
+    if (opponentCaptures.length === 0 && opponentMoves.length === 0) {
+        return { isGameOver: true, winner: player };
+    }
+
+    let opponentPieceCount = 0;
+    for (let r = 0; r < BOARD_SIZE; r++) {
+        for (let c = 0; c < BOARD_SIZE; c++) {
+            if (isPlayerPiece(board[r][c], opponent)) {
+                opponentPieceCount++;
+            }
         }
-        return { gameOver: false };
+    }
+
+    if (opponentPieceCount === 0) {
+        return { isGameOver: true, winner: player };
     }
     
-    getOpponentId(playerId) {
-        for (let r = 0; r < 8; r++) {
-            for (let c = 0; c < 8; c++) {
-                const piece = this.board[r][c];
-                if (piece && piece.playerId !== playerId) {
-                    return piece.playerId;
-                }
-            }
-        }
-        return null;
-    }
+    return { isGameOver: false };
+};
 
-    hasValidMoves(row, col) {
-        const piece = this.board[row][col];
-        if (!piece) return false;
 
-        const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-        for (const [dr, dc] of directions) {
-            // Check simple move
-            const toRow = row + dr;
-            const toCol = col + dc;
-            if (this.isWithinBounds(toRow, toCol) && !this.board[toRow][toCol]) {
-                if (piece.isKing) return true;
-                if (!piece.isKing && (piece.color === 'black' ? dr > 0 : dr < 0)) return true;
-            }
-            // Check capture move
-            const landRow = row + 2 * dr;
-            const landCol = col + 2 * dc;
-            if (this.isWithinBounds(landRow, landCol) && !this.board[landRow][landCol]) {
-                const opponentPiece = this.board[toRow][toCol];
-                if (opponentPiece && opponentPiece.color !== piece.color) return true;
-            }
-        }
-        return false;
-    }
-    
-    static getInitialBoard(player1Id, player2Id) {
-        const board = Array(8).fill(null).map(() => Array(8).fill(null));
-        for (let row = 0; row < 3; row++) {
-            for (let col = 0; col < 8; col++) {
-                if ((row + col) % 2 !== 0) {
-                    board[row][col] = { playerId: player2Id, color: 'black', isKing: false };
-                }
-            }
-        }
-        for (let row = 5; row < 8; row++) {
-            for (let col = 0; col < 8; col++) {
-                if ((row + col) % 2 !== 0) {
-                    board[row][col] = { playerId: player1Id, color: 'white', isKing: false };
-                }
-            }
-        }
-        return JSON.stringify(board);
-    }
-}
-
-module.exports = GameLogic;
+module.exports = {
+    createInitialBoard,
+    validateMove,
+    applyMove,
+    checkWinCondition,
+    serializeBoard,
+    deserializeBoard
+};
