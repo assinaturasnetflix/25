@@ -17,56 +17,71 @@ const createInitialBoard = () => {
     ];
 };
 
-const isOpponent = (piece, opponentPiece) => {
-    return piece.toLowerCase().charAt(0) !== opponentPiece.toLowerCase().charAt(0);
+const isOpponent = (playerPiece, targetPiece) => {
+    if (!playerPiece || !targetPiece) return false;
+    const playerInitial = playerPiece.charAt(0);
+    const targetInitial = targetPiece.charAt(0);
+    return playerInitial !== targetInitial;
 };
 
-const findCaptureMoves = (board, r, c) => {
+// ** LÓGICA REFINADA PARA CAPTURAS DA DAMA **
+const findCaptureMovesForKing = (board, r, c) => {
     const piece = board[r][c];
-    if (!piece) return [];
-    const player = piece.startsWith(W) ? W : B;
+    if (!piece || piece.length === 1) return []; // Apenas Damas
     const moves = [];
     const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
-    if (piece === B || piece === W) {
-        for (const [dr, dc] of directions) {
-            const nr = r + dr;
-            const nc = c + dc;
-            const nnr = r + dr * 2;
-            const nnc = c + dc * 2;
+    for (const [dr, dc] of directions) {
+        let opponentFound = null;
+        let opponentPos = null;
 
-            if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8 && board[nnr][nnc] === E) {
-                const jumpedPiece = board[nr][nc];
-                if (jumpedPiece && isOpponent(player, jumpedPiece)) {
-                    moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
+        for (let i = 1; i < 8; i++) {
+            const nr = r + dr * i;
+            const nc = c + dc * i;
+
+            if (!(nr >= 0 && nr < 8 && nc >= 0 && nc < 8)) break; // Fora do tabuleiro
+
+            const targetCell = board[nr][nc];
+
+            if (targetCell) {
+                if (isOpponent(piece, targetCell)) {
+                    if (opponentFound) break; // Já encontrou um oponente nesta linha, não pode saltar dois
+                    opponentFound = targetCell;
+                    opponentPos = [nr, nc];
+                } else {
+                    break; // Bloqueado pela própria peça
+                }
+            } else { // Casa vazia
+                if (opponentFound) {
+                    // Se encontrou um oponente, pode aterrar em qualquer casa vazia depois dele
+                    moves.push({
+                        from: [r, c],
+                        to: [nr, nc],
+                        captured: [opponentPos]
+                    });
                 }
             }
         }
-    } else { // King logic
-        for (const [dr, dc] of directions) {
-            let path = [];
-            for (let i = 1; i < 8; i++) {
-                const cr = r + dr * i;
-                const cc = c + dc * i;
-                if (!(cr >= 0 && cr < 8 && cc >= 0 && cc < 8)) break;
+    }
+    return moves;
+};
 
-                const currentCell = board[cr][cc];
-                if (currentCell) {
-                    if (isOpponent(player, currentCell)) {
-                        const nextR = cr + dr;
-                        const nextC = cc + dc;
-                        if (nextR >= 0 && nextR < 8 && nextC >= 0 && nextC < 8 && board[nextR][nextC] === E) {
-                            for (let j = 1; j < 8; j++) {
-                                const landR = nextR + dr * (j-1);
-                                const landC = nextC + dc * (j-1);
-                                if (!(landR >= 0 && landR < 8 && landC >= 0 && landC < 8)) break;
-                                if (board[landR][landC] !== E) break;
-                                moves.push({ from: [r, c], to: [landR, landC], captured: [[cr, cc]] });
-                            }
-                        }
-                    }
-                    break;
-                }
+const findCaptureMovesForPawn = (board, r, c) => {
+    const piece = board[r][c];
+    if (!piece || piece.length > 1) return []; // Apenas Peões
+    const moves = [];
+    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]]; // Peões podem capturar para trás
+
+    for (const [dr, dc] of directions) {
+        const nr = r + dr;
+        const nc = c + dc;
+        const nnr = r + dr * 2;
+        const nnc = c + dc * 2;
+
+        if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8 && board[nnr][nnc] === E) {
+            const jumpedPiece = board[nr][nc];
+            if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
+                moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
             }
         }
     }
@@ -77,10 +92,10 @@ const findSimpleMoves = (board, r, c) => {
     const piece = board[r][c];
     if (!piece) return [];
     const moves = [];
-    const forward = piece.startsWith(W) ? -1 : 1;
-    const directions = piece.startsWith(W) || piece.startsWith(B) ? [[forward, -1], [forward, 1]] : [[-1, -1], [-1, 1], [1, -1], [1, 1]];
     
-    if(piece === W || piece === B) {
+    if (piece === W || piece === B) { // Movimento do Peão
+        const forward = piece === W ? -1 : 1;
+        const directions = [[forward, -1], [forward, 1]];
         for (const [dr, dc] of directions) {
             const nr = r + dr;
             const nc = c + dc;
@@ -88,17 +103,14 @@ const findSimpleMoves = (board, r, c) => {
                 moves.push({ from: [r, c], to: [nr, nc], captured: [] });
             }
         }
-    } else { // King
+    } else { // Movimento da Dama
+        const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         for (const [dr, dc] of directions) {
             for (let i = 1; i < 8; i++) {
                 const nr = r + dr * i;
                 const nc = c + dc * i;
-                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8) {
-                    if (board[nr][nc] === E) {
-                        moves.push({ from: [r, c], to: [nr, nc], captured: [] });
-                    } else {
-                        break;
-                    }
+                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === E) {
+                    moves.push({ from: [r, c], to: [nr, nc], captured: [] });
                 } else {
                     break;
                 }
@@ -107,73 +119,6 @@ const findSimpleMoves = (board, r, c) => {
     }
     return moves;
 };
-
-const getPossibleMovesForPlayer = (board, player) => {
-    let allCaptures = [];
-    let allSimpleMoves = [];
-    for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-            const piece = board[r][c];
-            if (piece && piece.startsWith(player)) {
-                allCaptures.push(...findCaptureMoves(board, r, c));
-                allSimpleMoves.push(...findSimpleMoves(board, r, c));
-            }
-        }
-    }
-
-    if (allCaptures.length > 0) {
-        const tempBoard = JSON.parse(JSON.stringify(board));
-        return findLongestCapturePath(tempBoard, player);
-    }
-    return allSimpleMoves;
-};
-
-const findLongestCapturePath = (board, player) => {
-    let longestPath = [];
-    let maxCaptures = 0;
-
-    for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-            if (board[r][c] && board[r][c].startsWith(player)) {
-                let paths = findPathsFrom(JSON.parse(JSON.stringify(board)), r, c);
-                for(const path of paths) {
-                    if (path.captured.length > maxCaptures) {
-                        maxCaptures = path.captured.length;
-                        longestPath = [path];
-                    } else if (path.captured.length === maxCaptures && maxCaptures > 0) {
-                        longestPath.push(path);
-                    }
-                }
-            }
-        }
-    }
-    
-    return longestPath;
-};
-
-const findPathsFrom = (board, r, c) => {
-    let initialMoves = findCaptureMoves(board, r, c);
-    let allPaths = [];
-
-    for (const move of initialMoves) {
-        let newBoard = applyMoveToBoard(JSON.parse(JSON.stringify(board)), move);
-        let newPaths = findPathsFrom(newBoard, move.to[0], move.to[1]);
-        
-        if (newPaths.length === 0) {
-            allPaths.push(move);
-        } else {
-            for (const path of newPaths) {
-                allPaths.push({
-                    from: move.from,
-                    to: path.to,
-                    captured: move.captured.concat(path.captured)
-                });
-            }
-        }
-    }
-    return allPaths;
-};
-
 
 const applyMoveToBoard = (board, move) => {
     const newBoard = JSON.parse(JSON.stringify(board));
@@ -188,31 +133,109 @@ const applyMoveToBoard = (board, move) => {
         newBoard[capR][capC] = E;
     }
 
+    // Promove a Dama
     if ((piece === W && endR === 0) || (piece === B && endR === 7)) {
-        newBoard[endR][endC] = piece.toUpperCase() + 'k';
+        newBoard[endR][endC] = piece === W ? WK : BK;
     }
     
     return newBoard;
 };
 
-const checkWinCondition = (board, currentPlayer) => {
-    let opponent = currentPlayer === W ? B : W;
-    let myPieces = 0;
-    let opponentPieces = 0;
-
+// ** LÓGICA PRINCIPAL REFINADA PARA CAPTURAS MÚLTIPLAS **
+const getPossibleMovesForPlayer = (board, playerColor) => {
+    let allPlayerPieces = [];
     for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
-            if (board[r][c]) {
-                if (board[r][c].startsWith(currentPlayer)) myPieces++;
-                if (board[r][c].startsWith(opponent)) opponentPieces++;
+            if (board[r][c] && board[r][c].startsWith(playerColor)) {
+                allPlayerPieces.push([r, c]);
             }
         }
     }
-
-    if (opponentPieces === 0) return { winner: currentPlayer };
     
-    const opponentMoves = getPossibleMovesForPlayer(board, opponent);
-    if (opponentMoves.length === 0) return { winner: currentPlayer };
+    let allCaptureSequences = [];
+    for(const [r,c] of allPlayerPieces) {
+        const sequences = findCaptureSequencesFrom(board, r, c);
+        allCaptureSequences.push(...sequences);
+    }
+
+    if (allCaptureSequences.length > 0) {
+        let maxCaptures = 0;
+        for(const seq of allCaptureSequences){
+            if(seq.captured.length > maxCaptures){
+                maxCaptures = seq.captured.length;
+            }
+        }
+        return allCaptureSequences.filter(seq => seq.captured.length === maxCaptures);
+    }
+    
+    // Se não houver capturas, retorna movimentos simples
+    let allSimpleMoves = [];
+    for (const [r, c] of allPlayerPieces) {
+        allSimpleMoves.push(...findSimpleMoves(board, r, c));
+    }
+    return allSimpleMoves;
+};
+
+const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c], to: null, captured: [] }) => {
+    let finalSequences = [];
+    const piece = currentBoard[r][c];
+    const captureMoves = piece.length > 1 ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
+    
+    if (captureMoves.length === 0) {
+        if (sequence.captured.length > 0) {
+            sequence.to = [r, c]; // Onde a peça parou
+            finalSequences.push(sequence);
+        }
+        return finalSequences;
+    }
+
+    for (const move of captureMoves) {
+        const nextBoard = applyMoveToBoard(currentBoard, move);
+        const [nextR, nextC] = move.to;
+        
+        // ** VERIFICA SE A PEÇA SE TORNOU DAMA DURANTE A CAPTURA **
+        const newPieceOnBoard = nextBoard[nextR][nextC];
+        let continuingPiece = piece;
+        if(newPieceOnBoard.length > 1) {
+            continuingPiece = newPieceOnBoard;
+        }
+
+        const newSequence = {
+            from: sequence.from,
+            to: null,
+            captured: [...sequence.captured, ...move.captured]
+        };
+        
+        // Se a peça foi promovida, ela pode continuar a capturar como Dama no mesmo turno
+        const nextSequences = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
+        finalSequences.push(...nextSequences);
+    }
+
+    // Se nenhuma continuação for possível, esta sequência termina aqui.
+    if (finalSequences.length === 0 && sequence.captured.length > 0) {
+        sequence.to = [r, c];
+        return [sequence];
+    }
+    
+    return finalSequences;
+};
+
+const checkWinCondition = (board, currentPlayerColor) => {
+    const opponentColor = currentPlayerColor === 'w' ? 'b' : 'w';
+    
+    let opponentPiecesCount = 0;
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if (board[r][c] && board[r][c].startsWith(opponentColor)) {
+                opponentPiecesCount++;
+            }
+        }
+    }
+    
+    if (opponentPiecesCount === 0) return { winner: currentPlayerColor };
+    
+    const opponentMoves = getPossibleMovesForPlayer(board, opponentColor);
+    if (opponentMoves.length === 0) return { winner: currentPlayerColor };
     
     return { winner: null };
 };
