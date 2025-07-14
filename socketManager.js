@@ -4,6 +4,7 @@ const { generateGameInviteCode } = require('./utils.js');
 const initialConfig = require('./config.js');
 
 const activeSockets = new Map();
+const pendingConfirmationGames = new Map(); // Armazena timers para jogos aguardando confirmação
 
 module.exports = function(io) {
     io.on('connection', (socket) => {
@@ -53,14 +54,13 @@ module.exports = function(io) {
                 const newGame = new Game({
                     players: [user._id],
                     boardState: gameLogic.createInitialBoard(),
-                    currentPlayer: user._id,
                     betAmount,
                     description,
                     timeLimit,
                     status: 'waiting',
                     inviteCode: isPrivate ? generateGameInviteCode() : null,
                 });
-                user.currentGameId = newGame._id;
+                
                 await newGame.save();
                 await user.save();
                 
@@ -87,45 +87,33 @@ module.exports = function(io) {
             const user = await User.findById(userId);
             const game = await Game.findById(gameId);
 
-            if (!game) return callback({ success: false, message: 'Partida não encontrada.' });
+            if (!game || game.status !== 'waiting') return callback({ success: false, message: 'Partida não disponível.' });
             if (user.currentGameId) return callback({ success: false, message: 'Você já tem uma partida em andamento.' });
-            if (game.status !== 'waiting') return callback({ success: false, message: 'Esta partida já não está disponível.' });
-            if (game.players.length >= 2) return callback({ success: false, message: 'Esta partida já está cheia.' });
-            if (game.players[0].equals(user._id)) return callback({ success: false, message: 'Você não pode se juntar à sua própria partida.' });
+            if (game.players.length >= 2 || game.players[0].equals(user._id)) return callback({ success: false, message: 'Não é possível entrar nesta partida.' });
             if (game.inviteCode && game.inviteCode !== inviteCode) return callback({ success: false, message: 'Código de convite inválido.' });
-            
-            const config = (await PlatformConfig.findOne({ configKey: 'main' })) || initialConfig;
-            if (user.balance < game.betAmount) {
-                return callback({ success: false, message: 'Saldo insuficiente para entrar nesta aposta.' });
-            }
+            if (user.balance < game.betAmount) return callback({ success: false, message: 'Saldo insuficiente.' });
 
             try {
                 user.balance -= game.betAmount;
-                user.currentGameId = game._id;
-
                 game.players.push(user._id);
-                game.currentPlayer = Math.random() < 0.5 ? game.players[0] : game.players[1];
-                game.status = 'active';
+                game.status = 'readying';
                 
                 await user.save();
                 await game.save();
 
-                const populatedGame = await Game.findById(game._id).populate('players', 'username avatar userId balance');
+                const populatedGame = await Game.findById(game._id).populate('players', 'username avatar userId');
                 
                 socket.join(game._id.toString());
                 const opponentSocketId = activeSockets.get(game.players[0].toString());
-                if(opponentSocketId) {
-                    io.sockets.sockets.get(opponentSocketId)?.join(game._id.toString());
-                }
+                if(opponentSocketId) { io.sockets.sockets.get(opponentSocketId)?.join(game._id.toString()); }
                 
                 io.to(game._id.toString()).emit('match-found', populatedGame);
                 io.emit('lobby-game-removed', { gameId: game._id });
+
+                const timeoutId = setTimeout(() => cancelAndRefundGame(game._id, "Tempo de confirmação esgotado."), 2 * 60 * 1000);
+                pendingConfirmationGames.set(game._id.toString(), timeoutId);
+
                 callback({ success: true, game: populatedGame });
-
-                setTimeout(() => {
-                    io.to(game._id.toString()).emit('game-start', populatedGame);
-                }, 5000);
-
             } catch (error) {
                 user.balance += game.betAmount;
                 await user.save();
@@ -133,12 +121,49 @@ module.exports = function(io) {
             }
         });
         
+        socket.on('join-game-room', (data) => {
+            if(data.gameId) {
+                socket.join(data.gameId.toString());
+            }
+        });
+
+        socket.on('player-ready', async (data, callback) => {
+            const { gameId } = data;
+            const game = await Game.findById(gameId);
+            if (!game || game.status !== 'readying' || game.readyPlayers.includes(userId)) {
+                return callback({ success: false });
+            }
+
+            game.readyPlayers.push(userId);
+            
+            io.to(gameId.toString()).emit('player-confirmed', { userId });
+            callback({ success: true });
+
+            if (game.readyPlayers.length === 2) {
+                const timeoutId = pendingConfirmationGames.get(gameId.toString());
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                    pendingConfirmationGames.delete(gameId.toString());
+                }
+
+                game.status = 'active';
+                game.currentPlayer = Math.random() < 0.5 ? game.players[0] : game.players[1];
+                await User.updateMany({ _id: { $in: game.players } }, { $set: { currentGameId: game._id } });
+                await game.save();
+                
+                io.to(gameId.toString()).emit('game-start', game);
+            } else {
+                await game.save();
+            }
+        });
+        
         socket.on('player-move', async (data, callback) => {
             const { gameId, move } = data;
             const game = await Game.findById(gameId);
 
-            if (!game || game.status !== 'active') return;
-            if (!game.currentPlayer.equals(userId)) return;
+            if (!game || game.status !== 'active' || !game.currentPlayer.equals(userId)) {
+                return;
+            }
 
             const playerNumber = game.players[0].equals(userId) ? 1 : 2;
             const possibleMoves = gameLogic.findPossibleMoves(game.boardState, playerNumber);
@@ -256,6 +281,28 @@ module.exports = function(io) {
             game.status = 'incomplete';
             await game.save();
             io.to(game._id.toString()).emit('error', { message: 'Ocorreu um erro ao finalizar a partida. O status foi marcado como incompleto. Contacte o suporte.' });
+        }
+    }
+
+    async function cancelAndRefundGame(gameId, reason) {
+        const game = await Game.findById(gameId);
+        if (!game || (game.status !== 'readying' && game.status !== 'waiting')) return;
+
+        game.status = 'cancelled';
+        
+        await User.updateMany(
+            { _id: { $in: game.players } },
+            { $inc: { balance: game.betAmount } }
+        );
+
+        await game.save();
+        
+        io.to(gameId.toString()).emit('game-cancelled', { reason });
+        
+        const timeoutId = pendingConfirmationGames.get(gameId.toString());
+        if (timeoutId) {
+            clearTimeout(timeoutId);
+            pendingConfirmationGames.delete(gameId.toString());
         }
     }
 };
