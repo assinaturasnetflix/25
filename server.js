@@ -1,85 +1,71 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const http = require('http');
-const { Server } = require('socket.io');
+const mongoose = require('mongoose');
 const dotenv = require('dotenv');
 const cors = require('cors');
-const cloudinary = require('cloudinary').v2;
-const routes = require('./routes');
-const socketManager = require('./socketManager');
+const { Server } = require('socket.io');
+const { initializeSocketManager } = require('./socketManager');
+const apiRoutes = require('./routes');
+const { errorHandlerMiddleware } = require('./utils');
 
-dotenv.config({ path: './.env' });
+dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 
+const allowedOrigins = process.env.NODE_ENV === 'production'
+    ? [process.env.FRONTEND_URL]
+    : ['http://localhost:5500', 'http://127.0.0.1:5500']; // Adicione a porta que o seu frontend usará
+
 const corsOptions = {
-    origin: process.env.CORS_ORIGIN || '*',
-    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
 };
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+app.use('/api', apiRoutes);
+
+app.get('/', (req, res) => {
+    res.send('BrainSkill API is running...');
 });
 
-const DB = process.env.MONGO_URI;
+app.use(errorHandlerMiddleware);
 
-mongoose.connect(DB).then(() => {
-    console.log('Conexão com MongoDB estabelecida com sucesso!');
-}).catch(err => {
-    console.error('Erro na conexão com MongoDB:', err.message);
-    process.exit(1);
-});
-
-app.use('/api', routes);
-
-app.use((req, res, next) => {
-    const error = new Error(`Não encontrado - ${req.originalUrl}`);
-    res.status(404);
-    next(error);
-});
-
-app.use((err, req, res, next) => {
-    const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
-    res.status(statusCode);
-    res.json({
-        message: err.message,
-        stack: process.env.NODE_ENV === 'production' ? null : err.stack,
-    });
-});
+const connectDB = async () => {
+    try {
+        const conn = await mongoose.connect(process.env.MONGO_URI, {
+            useNewUrlParser: true,
+            useUnifiedTopology: true,
+        });
+        console.log(`MongoDB Connected: ${conn.connection.host}`);
+    } catch (error) {
+        console.error(`Error connecting to MongoDB: ${error.message}`);
+        process.exit(1);
+    }
+};
 
 const io = new Server(server, {
-    cors: {
-        origin: process.env.CORS_ORIGIN || '*',
-        methods: ["GET", "POST"]
-    },
-    connectionStateRecovery: {
-        maxDisconnectionDuration: 2 * 60 * 1000,
-        skipMiddlewares: true,
-    }
+    cors: corsOptions,
+    pingTimeout: 60000,
 });
 
-socketManager(io);
+initializeSocketManager(io);
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, () => {
-    console.log(`Servidor a correr em http://localhost:${PORT}`);
-});
-
-process.on('unhandledRejection', (err) => {
-    console.log('UNHANDLED REJECTION! 💥 Desligando...');
-    console.log(err.name, err.message);
-    server.close(() => {
-        process.exit(1);
+connectDB().then(() => {
+    server.listen(PORT, () => {
+        console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
     });
 });

@@ -1,508 +1,453 @@
-const bcrypt = require('bcryptjs');
-const jwt = 'jsonwebtoken';
-const crypto = require('crypto');
-const cloudinary = require('cloudinary').v2;
-const { User, Game, Transaction, PlatformSettings } = require('./models');
-const { 
-    generateUniqueId, 
-    generatePasswordResetCode, 
-    sendStyledEmail, 
-    getPasswordResetEmailHTML 
-} = require('./utils');
+const { User, Transaction, Game } = require('./models');
 const config = require('./config');
+const { 
+    generateToken, 
+    sendPasswordResetEmail, 
+    cloudinary, 
+    ErrorHandler, 
+    asyncHandler,
+    generateNumericId
+} = require('./utils');
+const crypto = require('crypto');
 
-const signToken = (id) => {
-    return require('jsonwebtoken').sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '90d',
+// @desc    Registrar um novo utilizador
+// @route   POST /api/users/register
+// @access  Public
+const registerUser = asyncHandler(async (req, res, next) => {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) {
+        return next(new ErrorHandler('Por favor, preencha todos os campos', 400));
+    }
+
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+        return next(new ErrorHandler('Utilizador já existe', 400));
+    }
+
+    const user = await User.create({ name, email, password });
+
+    if (user) {
+        const token = generateToken(user._id);
+        res.status(201).json({
+            _id: user._id,
+            userId: user.userId,
+            name: user.name,
+            email: user.email,
+            avatar: user.avatar,
+            bio: user.bio,
+            balance: user.balance,
+            token,
+        });
+    } else {
+        return next(new ErrorHandler('Dados de utilizador inválidos', 400));
+    }
+});
+
+// @desc    Autenticar utilizador e obter token
+// @route   POST /api/users/login
+// @access  Public
+const loginUser = asyncHandler(async (req, res, next) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+        return next(new ErrorHandler('Por favor, forneça email e senha', 400));
+    }
+    const user = await User.findOne({ email }).select('+password');
+
+    if (user && (await user.matchPassword(password))) {
+        if(user.isBlocked) {
+            return next(new ErrorHandler('Esta conta foi bloqueada.', 403));
+        }
+        const token = generateToken(user._id);
+        res.json({
+            _id: user._id,
+            userId: user.userId,
+            name: user.name,
+            email: user.email,
+            avatar: user.avatar,
+            bio: user.bio,
+            balance: user.balance,
+            role: user.role,
+            token,
+        });
+    } else {
+        return next(new ErrorHandler('Email ou senha inválidos', 401));
+    }
+});
+
+// @desc    Pedir recuperação de senha
+// @route   POST /api/users/forgotpassword
+// @access  Public
+const forgotPassword = asyncHandler(async (req, res, next) => {
+    const { email } = req.body;
+    const user = await User.findOne({ email });
+
+    if (!user) {
+        return next(new ErrorHandler('Não existe utilizador com este email', 404));
+    }
+    
+    const resetCode = generateNumericId(config.passwordReset.codeLength);
+    user.passwordResetCode = resetCode;
+    user.passwordResetExpires = Date.now() + 15 * 60 * 1000; // 15 minutos
+
+    await user.save();
+
+    try {
+        await sendPasswordResetEmail(user.email, resetCode);
+        res.status(200).json({ success: true, message: 'Email com código de recuperação enviado' });
+    } catch (err) {
+        user.passwordResetCode = undefined;
+        user.passwordResetExpires = undefined;
+        await user.save();
+        return next(new ErrorHandler('O email não pôde ser enviado', 500));
+    }
+});
+
+// @desc    Redefinir senha com código
+// @route   PUT /api/users/resetpassword
+// @access  Public
+const resetPassword = asyncHandler(async (req, res, next) => {
+    const { code, password } = req.body;
+    
+    const user = await User.findOne({
+        passwordResetCode: code,
+        passwordResetExpires: { $gt: Date.now() },
     });
-};
 
-const createSendToken = (user, statusCode, res) => {
-    const token = signToken(user._id);
-    user.password = undefined;
-    res.status(statusCode).json({
-        status: 'success',
-        token,
-        data: {
-            user,
-        },
+    if (!user) {
+        return next(new ErrorHandler('Código inválido ou expirado', 400));
+    }
+
+    user.password = password;
+    user.passwordResetCode = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    res.status(200).json({ success: true, message: 'Senha redefinida com sucesso' });
+});
+
+// @desc    Obter perfil do utilizador
+// @route   GET /api/users/profile
+// @access  Private
+const getUserProfile = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user._id);
+    res.json(user);
+});
+
+// @desc    Atualizar perfil do utilizador
+// @route   PUT /api/users/profile
+// @access  Private
+const updateUserProfile = asyncHandler(async (req, res, next) => {
+    const user = await User.findById(req.user._id);
+
+    if (user) {
+        user.name = req.body.name || user.name;
+        user.bio = req.body.bio || user.bio;
+        if(req.body.email && req.body.email !== user.email){
+             const userExists = await User.findOne({ email: req.body.email });
+             if (userExists) {
+                return next(new ErrorHandler('Este email já está em uso', 400));
+             }
+             user.email = req.body.email;
+        }
+
+        if (req.body.password) {
+            user.password = req.body.password;
+        }
+
+        if (req.file) {
+             if(user.avatar && user.avatar.public_id){
+                await cloudinary.uploader.destroy(user.avatar.public_id);
+             }
+             const result = await cloudinary.uploader.upload(req.file.path, {
+                folder: 'brainskill_avatars',
+                width: 200,
+                crop: 'scale'
+             });
+             user.avatar = { public_id: result.public_id, url: result.secure_url };
+        }
+
+        const updatedUser = await user.save();
+        res.json({
+            _id: updatedUser._id,
+            userId: updatedUser.userId,
+            name: updatedUser.name,
+            email: updatedUser.email,
+            avatar: updatedUser.avatar,
+            bio: updatedUser.bio,
+            balance: updatedUser.balance,
+            token: generateToken(updatedUser._id),
+        });
+    } else {
+        return next(new ErrorHandler('Utilizador não encontrado', 404));
+    }
+});
+
+
+// @desc    Fazer um pedido de depósito
+// @route   POST /api/transactions/deposit
+// @access  Private
+const requestDeposit = asyncHandler(async (req, res, next) => {
+    const { amount, method, proofText } = req.body;
+    
+    if (!amount || !method) {
+        return next(new ErrorHandler('Faltam o valor e o método.', 400));
+    }
+    if (amount < config.limits.minDeposit) {
+        return next(new ErrorHandler(`O depósito mínimo é de ${config.limits.minDeposit} MT.`, 400));
+    }
+    
+    let proofData = { type: 'none', content: '' };
+
+    if(req.file){
+        const result = await cloudinary.uploader.upload(req.file.path, {
+            folder: 'brainskill_proofs'
+        });
+        proofData = { type: 'image', content: result.secure_url };
+    } else if (proofText) {
+        proofData = { type: 'text', content: proofText };
+    } else {
+        return next(new ErrorHandler('É necessário um comprovativo (texto ou imagem).', 400));
+    }
+
+    await Transaction.create({
+        user: req.user._id,
+        type: 'deposit',
+        amount: Number(amount),
+        method,
+        status: 'pending',
+        proof: proofData
     });
-};
 
-exports.authController = {
-    register: async (req, res) => {
-        try {
-            const { username, email, password } = req.body;
-            if (!username || !email || !password) {
-                return res.status(400).json({ status: 'fail', message: 'Forneça nome de usuário, email e senha.' });
-            }
+    res.status(201).json({ success: true, message: 'Pedido de depósito enviado com sucesso. Aguarde a aprovação.' });
+});
 
-            const existingUser = await User.findOne({ $or: [{ email }, { username }] });
-            if (existingUser) {
-                return res.status(400).json({ status: 'fail', message: 'Email ou nome de usuário já existem.' });
-            }
-            
-            let newUserId;
-            let isUnique = false;
-            while (!isUnique) {
-                newUserId = generateUniqueId(5);
-                const userWithId = await User.findOne({ userId: newUserId });
-                if (!userWithId) {
-                    isUnique = true;
-                }
-            }
+// @desc    Fazer um pedido de levantamento
+// @route   POST /api/transactions/withdraw
+// @access  Private
+const requestWithdrawal = asyncHandler(async (req, res, next) => {
+    const { amount, method, phone } = req.body;
+    const user = await User.findById(req.user._id);
 
-            const newUser = await User.create({
-                userId: newUserId,
-                username,
-                email,
-                password,
-            });
-
-            createSendToken(newUser, 201, res);
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro interno do servidor.' });
-        }
-    },
-
-    login: async (req, res) => {
-        try {
-            const { email, password } = req.body;
-            if (!email || !password) {
-                return res.status(400).json({ status: 'fail', message: 'Forneça email e senha.' });
-            }
-
-            const user = await User.findOne({ email }).select('+password');
-            if (!user || !(await user.comparePassword(password))) {
-                return res.status(401).json({ status: 'fail', message: 'Email ou senha incorretos.' });
-            }
-
-            if (user.status === 'blocked') {
-                return res.status(403).json({ status: 'fail', message: 'Esta conta está bloqueada.' });
-            }
-
-            createSendToken(user, 200, res);
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro interno do servidor.' });
-        }
-    },
-    
-    requestPasswordReset: async (req, res) => {
-        try {
-            const user = await User.findOne({ email: req.body.email });
-            if (!user) {
-                return res.status(404).json({ status: 'fail', message: 'Não há usuário com este email.' });
-            }
-
-            const resetCode = generatePasswordResetCode();
-            user.passwordResetCode = crypto.createHash('sha256').update(resetCode).digest('hex');
-            user.passwordResetExpires = Date.now() + config.passwordReset.tokenLife;
-            await user.save({ validateBeforeSave: false });
-
-            const emailHTML = getPasswordResetEmailHTML(resetCode);
-            await sendStyledEmail(user.email, 'Recuperação de Senha - BrainSkill', emailHTML);
-            
-            res.status(200).json({ status: 'success', message: 'Código de recuperação enviado para o email.' });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Houve um erro ao enviar o email. Tente novamente mais tarde.' });
-        }
-    },
-    
-    verifyResetCode: async (req, res) => {
-        try {
-            const { email, code } = req.body;
-            const hashedCode = crypto.createHash('sha256').update(code).digest('hex');
-            const user = await User.findOne({
-                email,
-                passwordResetCode: hashedCode,
-                passwordResetExpires: { $gt: Date.now() },
-            });
-
-            if (!user) {
-                return res.status(400).json({ status: 'fail', message: 'Código inválido ou expirado.' });
-            }
-            
-            res.status(200).json({ status: 'success', message: 'Código verificado com sucesso.' });
-        } catch(error) {
-            res.status(500).json({ status: 'error', message: 'Erro interno do servidor.' });
-        }
-    },
-
-    resetPassword: async (req, res) => {
-        try {
-            const { email, code, password } = req.body;
-            const hashedCode = crypto.createHash('sha256').update(code).digest('hex');
-
-            const user = await User.findOne({
-                email,
-                passwordResetCode: hashedCode,
-                passwordResetExpires: { $gt: Date.now() },
-            });
-
-            if (!user) {
-                return res.status(400).json({ status: 'fail', message: 'Código inválido ou expirado.' });
-            }
-
-            user.password = password;
-            user.passwordResetCode = undefined;
-            user.passwordResetExpires = undefined;
-            await user.save();
-            
-            createSendToken(user, 200, res);
-
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro interno do servidor.' });
-        }
-    },
-};
-
-exports.userController = {
-    protect: async (req, res, next) => {
-        let token;
-        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-        }
-
-        if (!token) {
-            return res.status(401).json({ status: 'fail', message: 'Não está logado. Por favor, faça login para obter acesso.' });
-        }
-
-        try {
-            const decoded = await require('util').promisify(require('jsonwebtoken').verify)(token, process.env.JWT_SECRET);
-            const currentUser = await User.findById(decoded.id);
-
-            if (!currentUser) {
-                return res.status(401).json({ status: 'fail', message: 'O usuário pertencente a este token já não existe.' });
-            }
-            if (currentUser.status === 'blocked') {
-                return res.status(403).json({ status: 'fail', message: 'Esta conta foi bloqueada.' });
-            }
-
-            req.user = currentUser;
-            next();
-        } catch (error) {
-            return res.status(401).json({ status: 'fail', message: 'Token inválido ou expirado.' });
-        }
-    },
-    
-    getMe: (req, res) => {
-        res.status(200).json({ status: 'success', data: { user: req.user } });
-    },
-    
-    updateMe: async (req, res) => {
-        try {
-            const { username, bio, oldPassword, newPassword } = req.body;
-            
-            const user = await User.findById(req.user.id).select('+password');
-            
-            if (username) user.username = username;
-            if (bio) user.bio = bio;
-            
-            if (req.file) {
-                 const result = await cloudinary.uploader.upload(req.file.path);
-                 user.avatar = result.secure_url;
-            }
-
-            if (oldPassword && newPassword) {
-                if (!(await user.comparePassword(oldPassword))) {
-                    return res.status(401).json({ status: 'fail', message: 'Senha antiga incorreta.' });
-                }
-                user.password = newPassword;
-            }
-            
-            const updatedUser = await user.save();
-            updatedUser.password = undefined;
-
-            res.status(200).json({ status: 'success', data: { user: updatedUser } });
-        } catch (error) {
-             if (error.code === 11000) {
-                return res.status(400).json({ status: 'fail', message: 'Esse nome de usuário já está em uso.' });
-            }
-            res.status(500).json({ status: 'error', message: 'Erro ao atualizar perfil.' });
-        }
-    },
-
-    getPublicProfile: async (req, res) => {
-        try {
-            const user = await User.findOne({ userId: req.params.userId }).select('userId username avatar bio stats createdAt');
-            if (!user) {
-                return res.status(404).json({ status: 'fail', message: 'Usuário não encontrado.' });
-            }
-            res.status(200).json({ status: 'success', data: { user } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro interno do servidor.' });
-        }
-    },
-    
-    getRanking: async (req, res) => {
-        try {
-            const users = await User.find({ role: 'user' }).sort({ 'stats.wins': -1, 'stats.losses': 1 }).select('userId username avatar stats createdAt');
-            res.status(200).json({ status: 'success', results: users.length, data: { users } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar o ranking.' });
-        }
-    },
-    
-    getGameHistory: async (req, res) => {
-        try {
-            const games = await Game.find({ players: req.user.id })
-                .populate('players', 'userId username avatar')
-                .populate('winner', 'userId username')
-                .sort({ updatedAt: -1 });
-            res.status(200).json({ status: 'success', data: { games } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar histórico de partidas.' });
-        }
+    if (amount > user.balance) {
+        return next(new ErrorHandler('Saldo insuficiente.', 400));
     }
-};
-
-exports.transactionController = {
-    createTransaction: async (req, res) => {
-        try {
-            const { type, amount, method, paymentInfo } = req.body;
-            const parsedAmount = parseFloat(amount);
-            
-            const settings = await PlatformSettings.findOne();
-            const minLimit = type === 'deposit' ? settings.limits.minDeposit : settings.limits.minWithdrawal;
-            
-            if (parsedAmount < minLimit) {
-                return res.status(400).json({ status: 'fail', message: `O valor mínimo para ${type === 'deposit' ? 'depósito' : 'levantamento'} é de ${minLimit} MT.` });
-            }
-
-            if (type === 'withdrawal') {
-                if(req.user.balance < parsedAmount) {
-                    return res.status(400).json({ status: 'fail', message: 'Saldo insuficiente para levantamento.' });
-                }
-            }
-
-            let proofData;
-            if (req.file) {
-                const result = await cloudinary.uploader.upload(req.file.path);
-                proofData = result.secure_url;
-            } else if (req.body.proofText) {
-                proofData = req.body.proofText;
-            } else {
-                 return res.status(400).json({ status: 'fail', message: 'É necessário enviar um comprovativo (imagem ou texto).' });
-            }
-
-            const transaction = await Transaction.create({
-                user: req.user.id,
-                type,
-                amount: parsedAmount,
-                method,
-                proof: proofData,
-                paymentInfo: type === 'withdrawal' ? JSON.parse(paymentInfo) : undefined,
-            });
-
-            res.status(201).json({ status: 'success', message: `Pedido de ${type === 'deposit' ? 'depósito' : 'levantamento'} recebido. Aguardando aprovação.`, data: { transaction } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao criar a transação.' });
-        }
-    },
-    
-    getMyTransactions: async (req, res) => {
-        try {
-            const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 });
-            res.status(200).json({ status: 'success', data: { transactions } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar transações.' });
-        }
+    if (amount < config.limits.minWithdrawal) {
+        return next(new ErrorHandler(`O levantamento mínimo é de ${config.limits.minWithdrawal} MT.`, 400));
     }
-};
 
-exports.adminController = {
-    isAdmin: (req, res, next) => {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ status: 'fail', message: 'Acesso negado. Ação restrita a administradores.' });
-        }
-        next();
-    },
-
-    getAllUsers: async (req, res) => {
-        try {
-            const users = await User.find().sort({ createdAt: -1 });
-            res.status(200).json({ status: 'success', data: { users } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar usuários.' });
-        }
-    },
+    user.balance -= Number(amount);
+    await user.save();
     
-    toggleUserBlock: async (req, res) => {
-        try {
-            const user = await User.findById(req.params.id);
-            if (!user) return res.status(404).json({ status: 'fail', message: 'Usuário não encontrado.' });
-            
-            user.status = user.status === 'active' ? 'blocked' : 'active';
-            await user.save({ validateBeforeSave: false });
-            
-            res.status(200).json({ status: 'success', message: `Usuário ${user.status === 'blocked' ? 'bloqueado' : 'desbloqueado'}.`, data: { user } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao atualizar status do usuário.' });
-        }
-    },
-    
-    getTransactions: async (req, res) => {
-        try {
-            const filter = req.query.status ? { status: req.query.status } : {};
-            const transactions = await Transaction.find(filter).populate('user', 'username userId').sort({ createdAt: -1 });
-            res.status(200).json({ status: 'success', data: { transactions } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar transações.' });
-        }
-    },
+    await Transaction.create({
+        user: req.user._id,
+        type: 'withdrawal',
+        amount: Number(amount),
+        method,
+        status: 'pending',
+        proof: { type: 'text', content: `Nº Telemóvel: ${phone}` }
+    });
 
-    processTransaction: async (req, res) => {
-        try {
-            const { transactionId, action, adminNotes } = req.body; // action: 'approve' ou 'reject'
-            const transaction = await Transaction.findById(transactionId);
+    res.status(200).json({ success: true, message: 'Pedido de levantamento enviado. Será processado em breve.', newBalance: user.balance });
+});
 
-            if (!transaction || transaction.status !== 'pending') {
-                return res.status(404).json({ status: 'fail', message: 'Transação não encontrada ou já processada.' });
-            }
 
-            const user = await User.findById(transaction.user);
-            if (!user) return res.status(404).json({ status: 'fail', message: 'Usuário associado não encontrado.' });
-            
-            if (action === 'approve') {
-                if (transaction.type === 'deposit') {
-                    user.balance += transaction.amount;
-                } else {
-                    if (user.balance < transaction.amount) {
-                         transaction.status = 'rejected';
-                         transaction.adminNotes = 'Saldo insuficiente no momento da aprovação.';
-                         await transaction.save();
-                         return res.status(400).json({ status: 'fail', message: 'Usuário não tem saldo suficiente. Transação rejeitada.' });
-                    }
-                    user.balance -= transaction.amount;
-                }
-                transaction.status = 'approved';
-            } else if (action === 'reject') {
-                transaction.status = 'rejected';
-            } else {
-                return res.status(400).json({ status: 'fail', message: 'Ação inválida.' });
-            }
+// @desc    Obter histórico de transações do utilizador
+// @route   GET /api/transactions/history
+// @access  Private
+const getTransactionHistory = asyncHandler(async (req, res) => {
+    const transactions = await Transaction.find({ user: req.user._id }).sort({ createdAt: -1 });
+    res.json(transactions);
+});
 
-            transaction.processedBy = req.user.id;
-            if(adminNotes) transaction.adminNotes = adminNotes;
+// @desc    Obter histórico de partidas do utilizador
+// @route   GET /api/games/history
+// @access  Private
+const getGameHistory = asyncHandler(async (req, res) => {
+    const games = await Game.find({ players: req.user._id })
+        .populate('players', 'name avatar userId')
+        .populate('winner', 'name userId')
+        .sort({ createdAt: -1 });
+    res.json(games);
+});
 
-            await user.save();
-            await transaction.save();
 
-            res.status(200).json({ status: 'success', message: `Transação ${action === 'approve' ? 'aprovada' : 'rejeitada'}.`, data: { transaction } });
+// @desc    Obter ranking de jogadores
+// @route   GET /api/users/ranking
+// @access  Public
+const getRanking = asyncHandler(async (req, res) => {
+    const ranking = await User.find({ role: 'user' })
+        .sort({ 'stats.wins': -1, 'stats.losses': 1 })
+        .select('userId name avatar bio stats createdAt');
+    res.json(ranking);
+});
 
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao processar a transação.' });
-        }
-    },
-
-    manualBalanceUpdate: async (req, res) => {
-        try {
-            const { userId, amount, reason } = req.body;
-            const targetUser = await User.findById(userId);
-            if (!targetUser) return res.status(404).json({ status: 'fail', message: 'Usuário não encontrado.' });
-
-            targetUser.balance += parseFloat(amount);
-            if(targetUser.balance < 0) targetUser.balance = 0;
-            await targetUser.save();
-            
-            res.status(200).json({ status: 'success', message: `Saldo de ${targetUser.username} atualizado.`, data: { newBalance: targetUser.balance }});
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao atualizar o saldo.' });
-        }
-    },
-    
-    getPlatformStats: async (req, res) => {
-        try {
-            const totalDeposited = await Transaction.aggregate([
-                { $match: { type: 'deposit', status: 'approved' } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            
-            const totalWithdrawn = await Transaction.aggregate([
-                { $match: { type: 'withdrawal', status: 'approved' } },
-                { $group: { _id: null, total: { $sum: '$amount' } } }
-            ]);
-            
-            const games = await Game.find({ status: 'completed', winner: { $ne: null } });
-            const settings = await PlatformSettings.findOne();
-            const commissionRate = settings ? settings.commissionRate : config.commissionRate;
-            const totalCommission = games.reduce((acc, game) => acc + (game.betAmount * 2 * commissionRate), 0);
-
-            res.status(200).json({
-                status: 'success',
-                data: {
-                    totalDeposited: totalDeposited[0]?.total || 0,
-                    totalWithdrawn: totalWithdrawn[0]?.total || 0,
-                    totalCommission,
-                    userCount: await User.countDocuments(),
-                    gamesPlayed: games.length,
-                }
-            });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao calcular estatísticas.' });
-        }
-    },
-    
-    getPlatformSettings: async (req, res) => {
-        try {
-            let settings = await PlatformSettings.findOne();
-            if (!settings) {
-                settings = await PlatformSettings.create({ singleton: true });
-            }
-            res.status(200).json({ status: 'success', data: { settings } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar configurações.' });
-        }
-    },
-    
-    updatePlatformSettings: async (req, res) => {
-        try {
-            let settings = await PlatformSettings.findOneAndUpdate({ singleton: true }, req.body, { new: true, upsert: true });
-            res.status(200).json({ status: 'success', data: { settings } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao atualizar configurações.' });
-        }
+// @desc    Obter perfil público de um jogador
+// @route   GET /api/users/public/:userId
+// @access  Public
+const getPublicProfile = asyncHandler(async (req, res, next) => {
+    const user = await User.findOne({ userId: req.params.userId }).select('userId name avatar bio stats createdAt');
+    if (!user) {
+        return next(new ErrorHandler('Utilizador não encontrado', 404));
     }
-};
+    res.json(user);
+});
 
-exports.generalController = {
-     getLobby: async (req, res) => {
-        try {
-            const games = await Game.find({ status: 'waiting_for_opponent', isPrivate: false })
-                .populate('players', 'userId username avatar')
-                .sort({ createdAt: -1 });
+// @desc    Obter configurações da plataforma
+// @route   GET /api/platform/config
+// @access  Public
+const getPlatformConfig = (req, res) => {
+    res.json({
+        platformName: config.platformName,
+        limits: config.limits,
+        paymentMethods: config.paymentMethods
+    });
+}
 
-            res.status(200).json({ status: 'success', data: { games } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar o lobby.' });
-        }
-    },
-    getGameDetails: async (req, res) => {
-        try {
-            const game = await Game.findOne({ gameId: req.params.gameId }).populate('players', 'userId username avatar');
-            if (!game) {
-                return res.status(404).json({ status: 'fail', message: 'Partida não encontrada.' });
-            }
-            res.status(200).json({ status: 'success', data: { game } });
-        } catch(error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar detalhes da partida.' });
-        }
-    },
-    getHelpPage: async (req, res) => {
-        try {
-            const settings = await PlatformSettings.findOne().select('platformTexts.help');
-            res.status(200).json({ status: 'success', data: { helpContent: settings?.platformTexts?.help || "Página de ajuda ainda não configurada." } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar página de ajuda.' });
-        }
-    },
-     getPaymentMethods: async (req, res) => {
-        try {
-            const settings = await PlatformSettings.findOne().select('paymentMethods');
-            const activeMethods = settings.paymentMethods.filter(pm => pm.isActive);
-            res.status(200).json({ status: 'success', data: { paymentMethods: activeMethods } });
-        } catch (error) {
-            res.status(500).json({ status: 'error', message: 'Erro ao buscar métodos de pagamento.' });
-        }
+// ------------------- ROTAS DE ADMIN ------------------- //
+
+// @desc    Obter todos os utilizadores
+// @route   GET /api/admin/users
+// @access  Private/Admin
+const getAllUsers = asyncHandler(async (req, res) => {
+    const users = await User.find({}).sort({ createdAt: -1 });
+    res.json(users);
+});
+
+// @desc    Bloquear/Desbloquear utilizador
+// @route   PUT /api/admin/users/:id/block
+// @access  Private/Admin
+const toggleBlockUser = asyncHandler(async (req, res, next) => {
+    const user = await User.findById(req.params.id);
+    if (!user) {
+        return next(new ErrorHandler('Utilizador não encontrado', 404));
     }
+    user.isBlocked = !user.isBlocked;
+    await user.save();
+    res.json({ message: `Utilizador ${user.isBlocked ? 'bloqueado' : 'desbloqueado'} com sucesso.` });
+});
+
+// @desc    Ver transações pendentes
+// @route   GET /api/admin/transactions/pending
+// @access  Private/Admin
+const getPendingTransactions = asyncHandler(async (req, res) => {
+    const transactions = await Transaction.find({ status: 'pending' }).populate('user', 'name email userId').sort({ createdAt: 1 });
+    res.json(transactions);
+});
+
+// @desc    Aprovar ou recusar transação
+// @route   PUT /api/admin/transactions/:id/review
+// @access  Private/Admin
+const reviewTransaction = asyncHandler(async (req, res, next) => {
+    const { status, adminNotes } = req.body; // status: 'approved' or 'rejected'
+    const transaction = await Transaction.findById(req.params.id);
+
+    if (!transaction || transaction.status !== 'pending') {
+        return next(new ErrorHandler('Transação não encontrada ou já processada.', 404));
+    }
+
+    const user = await User.findById(transaction.user);
+    if (!user) {
+        return next(new ErrorHandler('Utilizador associado não encontrado.', 404));
+    }
+
+    if (status === 'approved') {
+        if (transaction.type === 'deposit') {
+            user.balance += transaction.amount;
+        }
+        // Para levantamento, o saldo já foi debitado no pedido.
+        transaction.status = 'approved';
+    } else if (status === 'rejected') {
+        if (transaction.type === 'withdrawal') {
+            // Devolver o saldo ao utilizador
+            user.balance += transaction.amount;
+        }
+        transaction.status = 'rejected';
+    } else {
+        return next(new ErrorHandler('Status inválido.', 400));
+    }
+    
+    transaction.adminNotes = adminNotes || '';
+    
+    await user.save();
+    await transaction.save();
+
+    res.json({ message: `Transação ${status} com sucesso.`, newBalance: user.balance });
+});
+
+
+// @desc    Ajustar saldo de um utilizador
+// @route   PUT /api/admin/users/:id/balance
+// @access  Private/Admin
+const adjustUserBalance = asyncHandler(async (req, res, next) => {
+    const { amount, reason } = req.body;
+    const user = await User.findById(req.params.id);
+
+    if (!user) return next(new ErrorHandler('Utilizador não encontrado.', 404));
+    if(!amount || !reason) return next(new ErrorHandler('Valor e motivo são obrigatórios.', 400));
+    
+    const numericAmount = Number(amount);
+    user.balance += numericAmount;
+    if (user.balance < 0) user.balance = 0;
+    
+    await Transaction.create({
+        user: user._id,
+        type: numericAmount > 0 ? 'admin_credit' : 'admin_debit',
+        amount: Math.abs(numericAmount),
+        status: 'completed',
+        adminNotes: reason,
+    });
+    
+    await user.save();
+    res.json({ message: 'Saldo ajustado com sucesso.', newBalance: user.balance });
+});
+
+
+// @desc    Obter estatísticas da plataforma
+// @route   GET /api/admin/stats
+// @access  Private/Admin
+const getPlatformStats = asyncHandler(async (req, res) => {
+    const totalDeposited = await Transaction.aggregate([
+        { $match: { type: 'deposit', status: 'approved' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const totalWithdrawn = await Transaction.aggregate([
+        { $match: { type: 'withdrawal', status: 'approved' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const totalCommission = await Transaction.aggregate([
+        { $match: { type: 'commission', status: 'completed' } },
+        { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]);
+    const totalUsers = await User.countDocuments({});
+    const totalGames = await Game.countDocuments({ status: 'completed' });
+
+    res.json({
+        totalDeposited: totalDeposited.length > 0 ? totalDeposited[0].total : 0,
+        totalWithdrawn: totalWithdrawn.length > 0 ? totalWithdrawn[0].total : 0,
+        totalCommission: totalCommission.length > 0 ? totalCommission[0].total : 0,
+        totalUsers,
+        totalGames,
+    });
+});
+
+module.exports = {
+    registerUser,
+    loginUser,
+    forgotPassword,
+    resetPassword,
+    getUserProfile,
+    updateUserProfile,
+    requestDeposit,
+    requestWithdrawal,
+    getTransactionHistory,
+    getGameHistory,
+    getRanking,
+    getPublicProfile,
+    getPlatformConfig,
+    getAllUsers,
+    toggleBlockUser,
+    getPendingTransactions,
+    reviewTransaction,
+    adjustUserBalance,
+    getPlatformStats
 };

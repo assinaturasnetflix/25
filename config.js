@@ -1,29 +1,56 @@
 const config = {
     platformName: "BrainSkill",
-    commissionRate: 0.15,
-    passwordReset: {
-        tokenLife: 15 * 60 * 1000,
-        codeLength: 6,
+    commission: {
+        rate: 0.15, // 15%
     },
     limits: {
         minDeposit: 50,
-        maxDeposit: 50000,
+        maxDeposit: 25000,
         minWithdrawal: 50,
-        maxWithdrawal: 50000,
+        maxWithdrawal: 25000,
         minBet: 10,
         maxBet: 10000,
     },
-    gameSettings: {
-        versusScreenDuration: 5000,
-        afkTimeout: 60000,
+    passwordReset: {
+        tokenExpiresIn: '15m',
+        codeLength: 6,
     },
-    defaultAvatar: 'PH9zdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJibGFjayIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGNsYXNzPSJmZWF0aGVyIGZlYXRoZXItdXNlciI+PHBhdGggZD0iTTIwIDIxdi0yYTQgNCAwIDAgMC00LTRIOGE0IDQgMCAwIDAtNCA0djIiPjwvcGF0aD48Y2lyY2xlIGN4PSIxMiIgY3k9IjciIHI9IjQiPjwvY2lyY2xlPjwvc3ZnPg==', // Base64 de um SVG de ícone de usuário
-    platformColors: {
-        dark: '#1a1a1a',
-        light: '#ffffff',
-        accent: '#000000',
+    game: {
+        versusScreenCountdown: 5, // segundos
+        opponentWaitTimeout: 60, // segundos
+        privateCodeLength: 6,
     },
-    font: 'Oswald, sans-serif'
+    defaults: {
+        user: {
+            bio: "Novo jogador no BrainSkill!",
+            avatarIcon: "user", // Nome do ícone da biblioteca Remix Icons ou Feather Icons
+        },
+    },
+    ids: {
+        user: {
+            length: 5,
+        },
+        transaction: {
+            length: 12,
+        }
+    },
+    colors: {
+        primary: "#000000",
+        secondary: "#FFFFFF",
+        accent: "#3a3a3a",
+        emailBackground: "#f4f4f4",
+        emailText: "#333333",
+    },
+    paymentMethods: [
+        {
+            name: "M-Pesa",
+            instructions: "Envie o valor para o número X e cole a mensagem de confirmação."
+        },
+        {
+            name: "e-Mola",
+            instructions: "Envie o valor para o número Y e envie o screenshot."
+        }
+    ]
 };
 
 module.exports = config;

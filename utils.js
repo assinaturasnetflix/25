@@ -1,6 +1,15 @@
+const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
-const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
+const crypto = 'crypto';
 const config = require('./config');
+const { User } = require('./models');
+
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const transporter = nodemailer.createTransport({
     service: 'gmail',
@@ -10,123 +19,113 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-const generateUniqueId = (length) => {
-    return Math.floor(Math.pow(10, length - 1) + Math.random() * (Math.pow(10, length) - Math.pow(10, length - 1) - 1));
+const generateToken = (id) => {
+    return jwt.sign({ id }, process.env.JWT_SECRET, {
+        expiresIn: '30d',
+    });
 };
 
-const generateTransactionId = () => {
-    const timestamp = Date.now();
-    const randomPart = crypto.randomBytes(4).toString('hex').toUpperCase();
-    return `BS-${timestamp}-${randomPart}`;
+const generateNumericId = (length) => {
+    let result = '';
+    const characters = '0123456789';
+    const charactersLength = characters.length;
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
 };
 
-const generatePasswordResetCode = () => {
-    return crypto.randomInt(100000, 999999).toString();
+const generatePrivateGameCode = (length) => {
+    let result = '';
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const charactersLength = characters.length;
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
 };
 
-const sendStyledEmail = async (to, subject, htmlContent) => {
+const sendPasswordResetEmail = async (email, code) => {
     const mailOptions = {
         from: `"${config.platformName}" <${process.env.EMAIL_USER}>`,
-        to,
-        subject,
-        html: htmlContent,
+        to: email,
+        subject: `Código de Recuperação de Senha - ${config.platformName}`,
+        html: `
+            <div style="font-family: Arial, sans-serif; line-height: 1.6; color: ${config.colors.emailText}; background-color: ${config.colors.emailBackground}; padding: 20px;">
+                <div style="max-width: 600px; margin: 0 auto; background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd;">
+                    <h2 style="color: ${config.colors.primary}; text-align: center;">${config.platformName}</h2>
+                    <p>Olá,</p>
+                    <p>Você solicitou a recuperação de sua senha. Use o código abaixo para redefinir sua senha. Este código é válido por 15 minutos.</p>
+                    <div style="text-align: center; margin: 20px 0;">
+                        <span style="display: inline-block; font-size: 24px; font-weight: bold; letter-spacing: 5px; padding: 10px 20px; background-color: ${config.colors.emailBackground}; border-radius: 5px;">${code}</span>
+                    </div>
+                    <p>Se você não solicitou esta alteração, por favor, ignore este e-mail.</p>
+                    <p>Atenciosamente,<br>Equipa ${config.platformName}</p>
+                </div>
+            </div>
+        `,
     };
 
-    try {
-        await transporter.sendMail(mailOptions);
-        return true;
-    } catch (error) {
-        console.error('Error sending email:', error);
-        return false;
+    await transporter.sendMail(mailOptions);
+};
+
+class ErrorHandler extends Error {
+    constructor(message, statusCode) {
+        super(message);
+        this.statusCode = statusCode;
+    }
+}
+
+const asyncHandler = (fn) => (req, res, next) => {
+    Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+const protect = asyncHandler(async (req, res, next) => {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            token = req.headers.authorization.split(' ')[1];
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            req.user = await User.findById(decoded.id).select('-password');
+            if (!req.user) {
+                return next(new ErrorHandler('Utilizador não encontrado', 401));
+            }
+            next();
+        } catch (error) {
+            return next(new ErrorHandler('Não autorizado, token falhou', 401));
+        }
+    }
+    if (!token) {
+        return next(new ErrorHandler('Não autorizado, sem token', 401));
+    }
+});
+
+const admin = (req, res, next) => {
+    if (req.user && req.user.role === 'admin') {
+        next();
+    } else {
+        res.status(401);
+        throw new Error('Não autorizado como administrador');
     }
 };
 
-const getPasswordResetEmailHTML = (code) => {
-    return `
-    <!DOCTYPE html>
-    <html lang="pt">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;700&display=swap" rel="stylesheet">
-        <title>Recuperação de Senha</title>
-        <style>
-            body {
-                font-family: 'Oswald', sans-serif;
-                background-color: #f4f4f4;
-                margin: 0;
-                padding: 0;
-                color: #333;
-            }
-            .container {
-                max-width: 600px;
-                margin: 40px auto;
-                background-color: #ffffff;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                overflow: hidden;
-            }
-            .header {
-                background-color: #1a1a1a;
-                color: #ffffff;
-                padding: 30px;
-                text-align: center;
-                font-size: 28px;
-                font-weight: 700;
-            }
-            .content {
-                padding: 40px;
-                line-height: 1.6;
-                text-align: center;
-            }
-            .code {
-                font-size: 42px;
-                font-weight: 700;
-                color: #000000;
-                letter-spacing: 8px;
-                margin: 25px 0;
-                padding: 15px;
-                background-color: #f0f0f0;
-                border-radius: 5px;
-                display: inline-block;
-            }
-            .footer {
-                text-align: center;
-                padding: 20px;
-                font-size: 12px;
-                color: #777;
-                background-color: #f9f9f9;
-            }
-            p {
-                margin: 0 0 15px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                ${config.platformName}
-            </div>
-            <div class="content">
-                <p>Olá,</p>
-                <p>Recebemos um pedido de recuperação de senha para a sua conta. Use o código abaixo para redefinir a sua senha.</p>
-                <div class="code">${code}</div>
-                <p>Este código é válido por <strong>15 minutos</strong>. Se não solicitou esta alteração, pode ignorar este email com segurança.</p>
-            </div>
-            <div class="footer">
-                © ${new Date().getFullYear()} ${config.platformName}. Todos os direitos reservados.
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
+const errorHandlerMiddleware = (err, req, res, next) => {
+    const statusCode = err.statusCode || 500;
+    res.status(statusCode).json({
+        message: err.message || 'Erro Interno do Servidor',
+        stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+    });
 };
 
-
 module.exports = {
-    generateUniqueId,
-    generateTransactionId,
-    generatePasswordResetCode,
-    sendStyledEmail,
-    getPasswordResetEmailHTML,
+    generateToken,
+    generateNumericId,
+    generatePrivateGameCode,
+    sendPasswordResetEmail,
+    cloudinary,
+    ErrorHandler,
+    asyncHandler,
+    protect,
+    admin,
+    errorHandlerMiddleware
 };

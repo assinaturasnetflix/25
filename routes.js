@@ -2,69 +2,90 @@ const express = require('express');
 const multer = require('multer');
 const path = require('path');
 const {
-    authController,
-    userController,
-    transactionController,
-    adminController,
-    generalController
+    registerUser,
+    loginUser,
+    forgotPassword,
+    resetPassword,
+    getUserProfile,
+    updateUserProfile,
+    requestDeposit,
+    requestWithdrawal,
+    getTransactionHistory,
+    getGameHistory,
+    getRanking,
+    getPublicProfile,
+    getPlatformConfig,
+    getAllUsers,
+    toggleBlockUser,
+    getPendingTransactions,
+    reviewTransaction,
+    adjustUserBalance,
+    getPlatformStats
 } = require('./controllers');
+const { protect, admin } = require('./utils');
 
 const router = express.Router();
 
 const storage = multer.diskStorage({});
-const upload = multer({
-    storage,
-    fileFilter: (req, file, cb) => {
-        let ext = path.extname(file.originalname).toLowerCase();
-        if (ext !== '.jpg' && ext !== '.jpeg' && ext !== '.png') {
-            cb(new Error('Formato de ficheiro não suportado'), false);
-            return;
-        }
-        cb(null, true);
+
+const fileFilter = (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png|gif/;
+    const mimetype = filetypes.test(file.mimetype);
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+
+    if (mimetype && extname) {
+        return cb(null, true);
     }
+    cb(new Error('Apenas imagens são permitidas!'));
+};
+
+const upload = multer({ 
+    storage, 
+    fileFilter,
+    limits: { fileSize: 2 * 1024 * 1024 } // 2MB
 });
 
-// --- Rotas de Autenticação (Públicas) ---
-router.post('/auth/register', authController.register);
-router.post('/auth/login', authController.login);
-router.post('/auth/request-password-reset', authController.requestPasswordReset);
-router.post('/auth/verify-reset-code', authController.verifyResetCode);
-router.post('/auth/reset-password', authController.resetPassword);
+// --- Rotas Públicas ---
+router.post('/users/register', registerUser);
+router.post('/users/login', loginUser);
+router.post('/users/forgotpassword', forgotPassword);
+router.put('/users/resetpassword', resetPassword);
+router.get('/users/ranking', getRanking);
+router.get('/users/public/:userId', getPublicProfile);
+router.get('/platform/config', getPlatformConfig);
 
-// --- Rotas Gerais (Públicas e Protegidas) ---
-router.get('/lobby', generalController.getLobby);
-router.get('/ranking', userController.getRanking);
-router.get('/profiles/:userId', userController.getPublicProfile);
-router.get('/help', generalController.getHelpPage);
-router.get('/payment-methods', generalController.getPaymentMethods);
-router.get('/games/:gameId', userController.protect, generalController.getGameDetails);
+// --- Rotas de Utilizador (Protegidas) ---
+router.route('/users/profile')
+    .get(protect, getUserProfile)
+    .put(protect, upload.single('avatar'), updateUserProfile);
 
+router.route('/transactions/deposit')
+    .post(protect, upload.single('proofImage'), requestDeposit);
+router.route('/transactions/withdraw')
+    .post(protect, requestWithdrawal);
+router.route('/transactions/history')
+    .get(protect, getTransactionHistory);
+router.route('/games/history')
+    .get(protect, getGameHistory);
 
-// --- Rotas de Usuário (Protegidas) ---
-router.use(userController.protect);
+// --- Rotas de Administrador (Protegidas) ---
+router.route('/admin/users')
+    .get(protect, admin, getAllUsers);
 
-router.get('/users/me', userController.getMe);
-router.patch('/users/update-me', upload.single('avatar'), userController.updateMe);
-router.get('/users/history', userController.getGameHistory);
+router.route('/admin/users/:id/block')
+    .put(protect, admin, toggleBlockUser);
 
-// --- Rotas de Transações (Protegidas) ---
-router.get('/transactions', transactionController.getMyTransactions);
-router.post('/transactions', upload.single('proof'), transactionController.createTransaction);
+router.route('/admin/users/:id/balance')
+    .put(protect, admin, adjustUserBalance);
 
+router.route('/admin/transactions/pending')
+    .get(protect, admin, getPendingTransactions);
 
-// --- Rotas de Administrador (Protegidas e com verificação de Admin) ---
-router.use(adminController.isAdmin);
-
-router.get('/admin/users', adminController.getAllUsers);
-router.patch('/admin/users/:id/toggle-block', adminController.toggleUserBlock);
-router.patch('/admin/users/update-balance', adminController.manualBalanceUpdate);
-
-router.get('/admin/transactions', adminController.getTransactions);
-router.post('/admin/transactions/process', adminController.processTransaction);
-
-router.get('/admin/stats', adminController.getPlatformStats);
-router.get('/admin/settings', adminController.getPlatformSettings);
-router.patch('/admin/settings', adminController.updatePlatformSettings);
+router.route('/admin/transactions/:id/review')
+    .put(protect, admin, reviewTransaction);
+    
+router.route('/admin/stats')
+    .get(protect, admin, getPlatformStats);
 
 
 module.exports = router;
