@@ -38,15 +38,17 @@ UserSchema.methods.comparePassword = async function(candidatePassword) {
 
 const GameSchema = new mongoose.Schema({
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    readyPlayers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     boardState: { type: [[Number]], required: true },
     currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    status: { type: String, enum: ['waiting', 'active', 'finished', 'cancelled', 'incomplete'], default: 'waiting' },
+    // ATUALIZAÇÃO APLICADA AQUI
+    status: { type: String, enum: ['waiting', 'readying', 'active', 'finished', 'cancelled', 'incomplete'], default: 'waiting' },
     betAmount: { type: Number, required: true },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     loser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     isDraw: { type: Boolean, default: false },
     description: { type: String, maxLength: 100 },
-    timeLimit: { type: Number, default: null }, // in minutes
+    timeLimit: { type: Number, default: null },
     inviteCode: { type: String, unique: true, sparse: true },
     moveHistory: { type: [Object], default: [] },
     finishedAt: { type: Date }
@@ -59,7 +61,7 @@ const TransactionSchema = new mongoose.Schema({
     method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
     amount: { type: Number, required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    proof: { type: String, required: true }, // M-Pesa/e-Mola transaction code
+    proof: { type: String, required: true },
     adminNotes: { type: String }
 }, { timestamps: true });
 
