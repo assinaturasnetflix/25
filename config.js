@@ -1,58 +1,37 @@
-const config = {
-    platform: {
-        name: "BrainSkill",
-        defaultCommissionRate: 0.15,
-        defaultCurrency: "MT",
-    },
-    user: {
-        idLength: 5,
-        passwordResetTokenExpiresIn: 15 * 60 * 1000,
-    },
-    wallet: {
-        minDeposit: 50.00,
-        maxDeposit: 50000.00,
-        minWithdrawal: 50.00,
-        maxWithdrawal: 25000.00,
-    },
-    game: {
-        bet: {
-            min: 10.00,
-            max: 10000.00,
+const platformSettings = {
+    defaultCommissionRate: 0.15, // 15%
+    minDepositAmount: 50,
+    maxDepositAmount: 10000,
+    minWithdrawalAmount: 50,
+    maxWithdrawalAmount: 10000,
+    minBetAmount: 10,
+    maxBetAmount: 5000,
+    passwordResetTokenExpiresIn: 15, // in minutes
+    gameInactiveCancelTime: 1, // in minutes
+    defaultPlayerAvatar: 'user', // Nome do ícone da biblioteca (ex: Feather Icons)
+    platformName: 'BrainSkill',
+    defaultHelpContent: `
+        <h2>Como Jogar</h2>
+        <p>As regras seguem o padrão da Dama Brasileira. A captura é obrigatória.</p>
+        <h2>Depósitos e Levantamentos</h2>
+        <p>Use M-Pesa ou e-Mola. Os depósitos são manuais e precisam ser aprovados por um administrador após o envio do comprovativo.</p>
+        <h2>Comissão</h2>
+        <p>A plataforma cobra uma taxa de 15% sobre os ganhos de cada partida.</p>
+    `,
+    paymentMethods: [
+        {
+            name: "M-Pesa",
+            number: "841234567",
+            holder: "Nome do Titular M-Pesa",
+            instructions: "Envie o valor exato para este número e submeta o ID da transação como comprovativo."
         },
-        timeouts: {
-            opponentConnection: 60,
-        },
-    },
-    style: {
-        colors: {
-            primary: "#000000",
-            secondary: "#FFFFFF",
-            accent: "#4a4a4a",
-        },
-        emailTheme: {
-            backgroundColor: "#f4f4f4",
-            headerColor: "#000000",
-            textColor: "#333333",
-            buttonColor: "#000000",
-            buttonTextColor: "#FFFFFF",
+        {
+            name: "e-Mola",
+            number: "861234567",
+            holder: "Nome do Titular e-Mola",
+            instructions: "Envie o valor exato para este número e submeta o ID da transação como comprovativo."
         }
-    },
-    texts: {
-        defaultLobbyMessage: "Vamos testar a minha sorte!",
-        helpPageContent: `
-            <h1>Bem-vindo à Central de Ajuda da BrainSkill</h1>
-            <p>Aqui você encontra respostas para as perguntas mais frequentes.</p>
-            <h2>Como depositar?</h2>
-            <p>1. Vá para a sua carteira.</p>
-            <p>2. Selecione o método de depósito (M-Pesa ou e-Mola).</p>
-            <p>3. Siga as instruções para transferir o valor desejado.</p>
-            <p>4. Submeta o comprovativo e aguarde a aprovação do administrador.</p>
-            <h2>Como funcionam as apostas?</h2>
-            <p>Você pode criar um jogo com um valor de aposta no lobby ou aceitar um desafio existente. O vencedor da partida recebe o valor total da aposta dos dois jogadores, menos uma comissão de 15% para a plataforma.</p>
-            <h2>Esqueci a minha senha, e agora?</h2>
-            <p>Na página de login, clique em "Esqueceu a senha?". Insira o seu email e enviaremos um código de recuperação com validade de 15 minutos.</p>
-        `
-    }
+    ]
 };
 
-module.exports = config;
+module.exports = platformSettings;

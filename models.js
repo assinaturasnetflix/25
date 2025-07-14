@@ -1,21 +1,26 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const config = require('./config');
 
 const UserSchema = new mongoose.Schema({
+    userId: { type: String, required: true, unique: true, index: true },
     username: { type: String, required: true, unique: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-    password: { type: String, required: true },
-    userId: { type: String, required: true, unique: true },
-    avatar: { type: String, default: 'default_icon' },
-    bio: { type: String, default: '', maxLength: 150 },
+    password: { type: String, required: true, select: false },
     balance: { type: Number, default: 0.00 },
+    avatar: { 
+        url: { type: String, default: 'default' },
+        public_id: { type: String, default: 'default' }
+    },
+    bio: { type: String, default: '', maxLength: 150 },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     wins: { type: Number, default: 0 },
     losses: { type: Number, default: 0 },
+    draws: { type: Number, default: 0 },
     isBlocked: { type: Boolean, default: false },
-    passwordResetToken: { type: String },
-    passwordResetExpires: { type: Date },
+    isOnline: { type: Boolean, default: false },
+    currentGameId: { type: mongoose.Schema.Types.ObjectId, ref: 'Game', default: null },
+    passwordResetToken: String,
+    passwordResetExpires: Date,
 }, { timestamps: true });
 
 UserSchema.pre('save', async function(next) {
@@ -27,72 +32,58 @@ UserSchema.pre('save', async function(next) {
     next();
 });
 
-UserSchema.methods.matchPassword = async function(enteredPassword) {
-    return await bcrypt.compare(enteredPassword, this.password);
+UserSchema.methods.comparePassword = async function(candidatePassword) {
+    return await bcrypt.compare(candidatePassword, this.password);
 };
 
-const TransactionSchema = new mongoose.Schema({
-    transactionId: { type: String, required: true, unique: true },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    type: { type: String, enum: ['deposit', 'withdrawal'], required: true },
-    amount: { type: Number, required: true },
-    method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
-    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    proof: { type: String },
-    adminNotes: { type: String },
-    userPhone: { type: String },
-}, { timestamps: true });
-
 const GameSchema = new mongoose.Schema({
-    gameId: { type: String, required: true, unique: true },
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    playerUsernames: [String],
-    playerAvatars: [String],
-    boardState: { type: String, required: true },
-    currentPlayerIndex: { type: Number, default: 0 },
+    boardState: { type: [[Number]], required: true },
+    currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    status: { type: String, enum: ['waiting', 'active', 'finished', 'cancelled', 'incomplete'], default: 'waiting' },
+    betAmount: { type: Number, required: true },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    status: { type: String, enum: ['waiting', 'in_progress', 'completed', 'abandoned'], default: 'waiting' },
-    betAmount: { type: Number, required: true },
-    platformFee: { type: Number, default: 0 },
-    moveHistory: { type: Array, default: [] },
-    timeLimit: { type: String, default: 'unlimited' },
-    lastMoveTimestamp: { type: Date, default: Date.now }
+    loser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    isDraw: { type: Boolean, default: false },
+    description: { type: String, maxLength: 100 },
+    timeLimit: { type: Number, default: null }, // in minutes
+    inviteCode: { type: String, unique: true, sparse: true },
+    moveHistory: { type: [Object], default: [] },
+    finishedAt: { type: Date }
 }, { timestamps: true });
 
-const LobbyGameSchema = new mongoose.Schema({
-    creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    betAmount: { type: Number, required: true },
-    description: { type: String, default: config.texts.defaultLobbyMessage },
-    timeLimit: { type: String, required: true },
-    status: { type: String, enum: ['open', 'matched'], default: 'open' },
-    gameId: { type: mongoose.Schema.Types.ObjectId, ref: 'Game', default: null },
+const TransactionSchema = new mongoose.Schema({
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    transactionId: { type: String, required: true, unique: true },
+    type: { type: String, enum: ['deposit', 'withdrawal'], required: true },
+    method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
+    amount: { type: Number, required: true },
+    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    proof: { type: String, required: true }, // M-Pesa/e-Mola transaction code
+    adminNotes: { type: String }
 }, { timestamps: true });
 
-const PlatformSettingsSchema = new mongoose.Schema({
-    singleton: { type: Boolean, default: true, unique: true },
-    commissionRate: { type: Number, default: config.platform.defaultCommissionRate },
-    minDeposit: { type: Number, default: config.wallet.minDeposit },
-    maxDeposit: { type: Number, default: config.wallet.maxDeposit },
-    minWithdrawal: { type: Number, default: config.wallet.minWithdrawal },
-    maxWithdrawal: { type: Number, default: config.wallet.maxWithdrawal },
-    minBet: { type: Number, default: config.game.bet.min },
-    maxBet: { type: Number, default: config.game.bet.max },
+const PlatformConfigSchema = new mongoose.Schema({
+    configKey: { type: String, default: "main", unique: true },
+    commissionRate: { type: Number, default: 0.15 },
+    minDepositAmount: { type: Number, default: 50 },
+    maxDepositAmount: { type: Number, default: 10000 },
+    minWithdrawalAmount: { type: Number, default: 50 },
+    maxWithdrawalAmount: { type: Number, default: 10000 },
+    minBetAmount: { type: Number, default: 10 },
+    maxBetAmount: { type: Number, default: 5000 },
+    helpContent: { type: String },
     paymentMethods: [{
         name: String,
         number: String,
-        holderName: String,
-        instructions: String,
-        type: { type: String, enum: ['M-Pesa', 'e-Mola'] }
-    }],
-    mainTexts: {
-        helpPage: { type: String, default: config.texts.helpPageContent }
-    }
+        holder: String,
+        instructions: String
+    }]
 });
 
 const User = mongoose.model('User', UserSchema);
-const Transaction = mongoose.model('Transaction', TransactionSchema);
 const Game = mongoose.model('Game', GameSchema);
-const LobbyGame = mongoose.model('LobbyGame', LobbyGameSchema);
-const PlatformSettings = mongoose.model('PlatformSettings', PlatformSettingsSchema);
+const Transaction = mongoose.model('Transaction', TransactionSchema);
+const PlatformConfig = mongoose.model('PlatformConfig', PlatformConfigSchema);
 
-module.exports = { User, Transaction, Game, LobbyGame, PlatformSettings };
+module.exports = { User, Game, Transaction, PlatformConfig };
