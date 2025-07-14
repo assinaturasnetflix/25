@@ -12,9 +12,6 @@ const socketManager = (io) => {
         if (userId) {
             activeUsers[userId] = socket.id;
             socket.join(userId);
-
-            // LÓGICA DE RECONEXÃO AGRESSIVA REMOVIDA DAQUI PARA EVITAR O LOOP DE REDIRECIONAMENTO.
-            // A reconexão agora é tratada quando o cliente entra na página do jogo.
         }
         
         socket.on('join_game_room', async ({ gameId }) => {
@@ -28,12 +25,13 @@ const socketManager = (io) => {
             
             socket.join(gameId);
 
-            // Se o jogo já estiver em progresso, envia o estado para o jogador reconectar.
             if (game.status === 'in_progress' && game.players.map(p => p.id).includes(userId)) {
+                 io.to(socket.id).emit('game_state', game);
+            } else if (game.status === 'waiting' && game.players.length === 2) {
+                 // Caso um jogador chegue antes do outro na sala de espera
                  io.to(socket.id).emit('game_state', game);
             }
         });
-
 
         socket.on('get_lobby', () => {
              io.to(socket.id).emit('lobby_update', Object.values(activeLobbies));
@@ -115,23 +113,26 @@ const socketManager = (io) => {
             if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Você não pode entrar na sua própria partida.' });
             if (joiner.balance < gameToJoin.betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
 
-            const creatorId = gameToJoin.players[0];
             gameToJoin.players.push(joinerId);
             await gameToJoin.save();
+            
+            // **A CORREÇÃO PRINCIPAL ESTÁ AQUI**
+            // Re-buscamos o jogo com os dados dos jogadores populados
+            const populatedGame = await Game.findById(gameToJoin.id).populate('players', 'username avatar');
 
-            const creatorSocketId = activeUsers[creatorId.toString()];
+            const creatorId = populatedGame.players[0]._id.toString();
+            const creatorSocketId = activeUsers[creatorId];
             if (creatorSocketId) {
                 const creatorSocket = io.sockets.sockets.get(creatorSocketId);
-                if (creatorSocket) {
-                    creatorSocket.join(gameToJoin.id.toString());
-                }
+                if (creatorSocket) creatorSocket.join(populatedGame.id.toString());
             }
-            socket.join(gameToJoin.id.toString());
+            socket.join(populatedGame.id.toString());
 
-            delete activeLobbies[gameToJoin.id];
+            delete activeLobbies[populatedGame.id.toString()];
             io.emit('lobby_update', Object.values(activeLobbies));
             
-            io.to(gameToJoin.id.toString()).emit('navigate_to_game', { gameId: gameToJoin.id });
+            // Emite um novo evento que CARREGA OS DADOS e instrui a navegação
+            io.to(populatedGame.id.toString()).emit('game_session_ready', populatedGame);
         });
         
         socket.on('player_ready', async ({ gameId }) => {
@@ -140,12 +141,11 @@ const socketManager = (io) => {
 
             if (!game || !userId || game.ready.map(id => id.toString()).includes(userId)) return;
 
-            game.ready.push(userId);
+            game.ready.push(new mongoose.Types.ObjectId(userId));
             await game.save();
 
             io.to(gameId).emit('update_ready_status', { userId });
 
-            // A verificação é feita após salvar para garantir consistência
             const updatedGame = await Game.findById(gameId);
             if (updatedGame.players.length === 2 && updatedGame.ready.length === 2) {
                 const player1 = await User.findById(updatedGame.players[0]);
