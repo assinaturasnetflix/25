@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
+const { generateNumericId } = require('./utils');
 const config = require('./config');
 
-const UserSchema = new mongoose.Schema({
+const userSchema = new mongoose.Schema({
     username: {
         type: String,
         required: true,
@@ -21,58 +21,36 @@ const UserSchema = new mongoose.Schema({
         required: true
     },
     avatar: {
-        type: String,
-        default: config.defaultAvatar
+        public_id: { type: String, default: 'default_avatar_id' },
+        url: { type: String, default: 'icon' } 
     },
     bio: {
         type: String,
-        maxlength: 250,
+        maxlength: 150,
         default: ''
     },
     balance: {
         type: Number,
-        default: 0,
-        min: 0
+        default: 0
+    },
+    stats: {
+        wins: { type: Number, default: 0 },
+        losses: { type: Number, default: 0 }
     },
     role: {
         type: String,
         enum: ['user', 'admin'],
         default: 'user'
     },
-    stats: {
-        wins: {
-            type: Number,
-            default: 0
-        },
-        losses: {
-            type: Number,
-            default: 0
-        },
-    },
-    passwordResetCode: String,
-    passwordResetExpires: Date,
     isBlocked: {
         type: Boolean,
         default: false
-    }
-}, {
-    timestamps: true
-});
+    },
+    passwordResetToken: String,
+    passwordResetExpires: Date,
+}, { timestamps: true });
 
-UserSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) {
-        return next();
-    }
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-});
-
-UserSchema.methods.comparePassword = async function(candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
-};
-
-const TransactionSchema = new mongoose.Schema({
+const transactionSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
@@ -80,8 +58,8 @@ const TransactionSchema = new mongoose.Schema({
     },
     transactionId: {
         type: String,
-        required: true,
-        unique: true
+        unique: true,
+        default: () => `T${generateNumericId(8)}`
     },
     type: {
         type: String,
@@ -96,7 +74,7 @@ const TransactionSchema = new mongoose.Schema({
     amount: {
         type: Number,
         required: true,
-        min: 0
+        min: config.minDeposit
     },
     status: {
         type: String,
@@ -104,129 +82,74 @@ const TransactionSchema = new mongoose.Schema({
         default: 'pending'
     },
     proof: {
-        type: String,
+        type: String, 
         required: true
     },
     adminNotes: {
-        type: String,
-        default: ''
+        type: String
     }
-}, {
-    timestamps: true
-});
+}, { timestamps: true });
 
-const GameSchema = new mongoose.Schema({
+const gameSchema = new mongoose.Schema({
     gameId: {
         type: String,
-        required: true,
-        unique: true
+        unique: true,
+        default: () => `G${generateNumericId(5)}`
     },
     players: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
-    creator: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true
-    },
     boardState: {
-        type: String,
+        type: [[String]],
         required: true
     },
-    currentPlayerIndex: {
-        type: Number,
-        default: 0
+    currentPlayer: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
     },
     status: {
         type: String,
-        enum: ['waiting', 'in_progress', 'completed', 'abandoned'],
+        enum: ['waiting', 'in_progress', 'completed', 'abandoned', 'cancelled'],
         default: 'waiting'
-    },
-    betAmount: {
-        type: Number,
-        required: true,
-        min: 0
     },
     winner: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         default: null
     },
+    betAmount: {
+        type: Number,
+        required: true,
+        min: config.minBet
+    },
     isPrivate: {
         type: Boolean,
         default: false
     },
+    privateGameCode: {
+        type: String,
+        default: null
+    },
     lobbyDescription: {
         type: String,
-        default: ''
+        maxlength: 100
     },
-    gameTime: {
-        type: String,
-        default: 'sem tempo'
+    timeLimit: {
+        type: Number,
+        default: null 
     },
-    waitingForConfirmation: [{
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User'
-    }],
     moveHistory: [{
-        type: String
-    }]
-}, {
-    timestamps: true
-});
-
-const PlatformSettingsSchema = new mongoose.Schema({
-    singleton: {
-        type: Boolean,
-        default: true,
-        unique: true
-    },
-    commissionRate: {
-        type: Number,
-        default: config.commissionRate
-    },
-    minDeposit: {
-        type: Number,
-        default: config.minDeposit
-    },
-    maxDeposit: {
-        type: Number,
-        default: config.maxDeposit
-    },
-    minWithdrawal: {
-        type: Number,
-        default: config.minWithdrawal
-    },
-    maxWithdrawal: {
-        type: Number,
-        default: config.maxWithdrawal
-    },
-    maxBet: {
-        type: Number,
-        default: config.maxBet
-    },
-    paymentMethods: [{
-        name: String,
-        instructions: String,
-        number: String,
-        holder: String
+        player: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        from: { r: Number, c: Number },
+        to: { r: Number, c: Number },
+        captured: [{ r: Number, c: Number }],
+        timestamp: { type: Date, default: Date.now }
     }],
-    platformTexts: {
-        welcome: String,
-        about: String,
-        rules: String
-    }
-});
+}, { timestamps: true });
 
-const User = mongoose.model('User', UserSchema);
-const Transaction = mongoose.model('Transaction', TransactionSchema);
-const Game = mongoose.model('Game', GameSchema);
-const PlatformSettings = mongoose.model('PlatformSettings', PlatformSettingsSchema);
+const User = mongoose.model('User', userSchema);
+const Transaction = mongoose.model('Transaction', transactionSchema);
+const Game = mongoose.model('Game', gameSchema);
 
-module.exports = {
-    User,
-    Transaction,
-    Game,
-    PlatformSettings
-};
+module.exports = { User, Transaction, Game };

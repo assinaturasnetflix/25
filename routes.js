@@ -1,78 +1,88 @@
 const express = require('express');
+const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const path = require('path');
+const { User } = require('./models');
+const controllers = require('./controllers');
+
 const router = express.Router();
 
-const {
-    authMiddleware,
-    adminMiddleware,
-    register,
-    login,
-    forgotPassword,
-    resetPassword,
-    getMyProfile,
-    updateMyProfile,
-    updatePassword,
-    uploadAvatar,
-    getUserPublicProfile,
-    getRanking,
-    createGame,
-    joinPrivateGame,
-    getGameHistory,
-    abandonGame,
-    getGameById,
-    getLobby,
-    createDeposit,
-    createWithdrawal,
-    getTransactionHistory,
-    adminGetAllUsers,
-    adminToggleBlockUser,
-    adminGetAllTransactions,
-    adminApproveTransaction,
-    adminRejectTransaction,
-    adminAdjustUserBalance,
-    adminGetDashboardStats,
-    adminGetSettings,
-    adminUpdateSettings,
-    adminConfirmPlayerReady
-} = require('./controllers');
+const storage = multer.diskStorage({});
+const upload = multer({ 
+    storage: storage,
+    fileFilter: (req, file, cb) => {
+        let ext = path.extname(file.originalname);
+        if (ext !== '.jpg' && ext !== '.jpeg' && ext !== '.png') {
+            cb(new Error('Tipo de arquivo não suportado'), false);
+            return;
+        }
+        cb(null, true);
+    }
+});
 
-const storage = multer.memoryStorage();
-const upload = multer({ storage });
+// Middleware de autenticação
+const protect = async (req, res, next) => {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+        try {
+            token = req.headers.authorization.split(' ')[1];
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            req.user = await User.findById(decoded.id).select('-password');
+            if (req.user.isBlocked) {
+                return res.status(403).json({ message: 'Sua conta está bloqueada.' });
+            }
+            next();
+        } catch (error) {
+            res.status(401).json({ message: 'Não autorizado, token falhou.' });
+        }
+    }
+    if (!token) {
+        res.status(401).json({ message: 'Não autorizado, sem token.' });
+    }
+};
 
-router.post('/api/auth/register', register);
-router.post('/api/auth/login', login);
-router.post('/api/auth/forgot-password', forgotPassword);
-router.post('/api/auth/reset-password', resetPassword);
+const admin = (req, res, next) => {
+    if (req.user && req.user.role === 'admin') {
+        next();
+    } else {
+        res.status(403).json({ message: 'Acesso negado. Rota apenas para administradores.' });
+    }
+};
 
-router.get('/api/users/me', authMiddleware, getMyProfile);
-router.put('/api/users/me', authMiddleware, updateMyProfile);
-router.put('/api/users/me/password', authMiddleware, updatePassword);
-router.put('/api/users/me/avatar', authMiddleware, upload.single('avatar'), uploadAvatar);
-router.get('/api/users/profile/:username', getUserPublicProfile);
-router.get('/api/users/ranking', getRanking);
+// Rotas de Autenticação e Usuário
+router.post('/users/register', controllers.registerUser);
+router.post('/users/login', controllers.loginUser);
+router.post('/users/forgot-password', controllers.forgotPassword);
+router.post('/users/reset-password', controllers.resetPassword);
 
-router.get('/api/games/lobby', getLobby);
-router.post('/api/games/create', authMiddleware, createGame);
-router.post('/api/games/join/private', authMiddleware, joinPrivateGame);
-router.get('/api/games/history', authMiddleware, getGameHistory);
-router.get('/api/games/:gameId', authMiddleware, getGameById);
-router.post('/api/games/:gameId/abandon', authMiddleware, abandonGame);
-router.post('/api/games/:gameId/ready', authMiddleware, adminConfirmPlayerReady);
+// Rotas de Perfil (Protegidas)
+router.get('/users/me', protect, controllers.getMe);
+router.put('/users/profile', protect, controllers.updateProfile);
+router.put('/users/password', protect, controllers.updatePassword);
+router.post('/users/avatar', protect, upload.single('avatar'), controllers.uploadAvatar);
 
-router.post('/api/transactions/deposit', authMiddleware, upload.single('proof'), createDeposit);
-router.post('/api/transactions/withdrawal', authMiddleware, createWithdrawal);
-router.get('/api/transactions/history', authMiddleware, getTransactionHistory);
+// Rotas Públicas
+router.get('/users/profile/:id', controllers.getPublicProfile);
+router.get('/ranking', controllers.getRanking);
 
-router.get('/api/admin/users', authMiddleware, adminMiddleware, adminGetAllUsers);
-router.put('/api/admin/users/:userId/toggle-block', authMiddleware, adminMiddleware, adminToggleBlockUser);
-router.post('/api/admin/users/:userId/balance', authMiddleware, adminMiddleware, adminAdjustUserBalance);
+// Rotas de Transações (Protegidas)
+router.post('/transactions/deposit', protect, upload.single('proof'), controllers.createDeposit);
+router.post('/transactions/withdrawal', protect, controllers.createWithdrawal);
+router.get('/transactions/me', protect, controllers.getMyTransactions);
 
-router.get('/api/admin/transactions', authMiddleware, adminMiddleware, adminGetAllTransactions);
-router.put('/api/admin/transactions/:transactionId/approve', authMiddleware, adminMiddleware, adminApproveTransaction);
-router.put('/api/admin/transactions/:transactionId/reject', authMiddleware, adminMiddleware, adminRejectTransaction);
+// Rotas de Histórico de Jogos
+router.get('/games/me', protect, controllers.getMyGames);
 
-router.get('/api/admin/dashboard', authMiddleware, adminMiddleware, adminGetDashboardStats);
-router.get('/api/admin/settings', authMiddleware, adminMiddleware, adminGetSettings);
-router.put('/api/admin/settings', authMiddleware, adminMiddleware, adminUpdateSettings);
+// Rotas de Administrador (Protegidas por admin)
+router.get('/admin/users', protect, admin, controllers.getAllUsers);
+router.put('/admin/users/:id/toggle-block', protect, admin, controllers.toggleBlockUser);
+router.put('/admin/users/:id/balance', protect, admin, controllers.manualBalanceUpdate);
+router.get('/admin/transactions', protect, admin, controllers.getAllTransactions);
+router.put('/admin/transactions/:id/process', protect, admin, controllers.processTransaction);
+router.get('/admin/stats', protect, admin, controllers.getDashboardStats);
+router.get('/admin/settings', protect, admin, controllers.getPlatformSettings);
+router.put('/admin/settings', protect, admin, controllers.updatePlatformSettings);
+router.get('/admin/payment-methods', protect, admin, controllers.getPaymentMethods);
+router.put('/admin/payment-methods', protect, admin, controllers.updatePaymentMethods);
 
 module.exports = router;
