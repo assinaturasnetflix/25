@@ -282,7 +282,7 @@ exports.requestWithdrawal = async (req, res) => {
 // Game Controllers
 exports.getGameLobbies = async (req, res) => {
     try {
-        const lobbies = await Game.find({ status: 'waiting', inviteCode: null }) // Apenas jogos públicos
+        const lobbies = await Game.find({ status: 'waiting', inviteCode: null })
             .populate('players', 'username avatar userId')
             .sort({ createdAt: -1 });
         res.status(200).json(lobbies);
@@ -294,10 +294,22 @@ exports.getGameLobbies = async (req, res) => {
 exports.getMatchHistory = async (req, res) => {
     try {
         const history = await Game.find({ players: req.user._id })
-            .populate('players', 'username avatar userId')
-            .populate('winner', 'username')
-            .sort({ createdAt: -1 });
-        res.status(200).json(history);
+            .populate('players', 'username avatar userId _id')
+            .populate('winner', 'username _id') 
+            .populate('loser', 'username _id')
+            .sort({ createdAt: -1 })
+            .lean(); // .lean() retorna objetos JS puros, mais rápido e seguro para ler
+
+        // Garante que a estrutura é sempre a mesma
+        const processedHistory = history.map(game => {
+            return {
+                ...game,
+                winner: game.winner || null, // Garante que é null se não existir
+                loser: game.loser || null,
+            };
+        });
+
+        res.status(200).json(processedHistory);
     } catch (error) {
         res.status(500).json({ message: 'Erro ao buscar histórico.', error: error.message });
     }
