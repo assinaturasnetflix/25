@@ -25,8 +25,6 @@ const sendPasswordResetEmail = async (user, resetToken) => {
         },
     });
 
-    const resetUrl = `URL_DO_SEU_FRONTEND/reset-password/${resetToken}`; // Esta URL será a da sua página de redefinição
-
     const mailOptions = {
         from: `"${initialConfig.platformName}" <${process.env.EMAIL_USER}>`,
         to: user.email,
@@ -250,7 +248,7 @@ exports.requestDeposit = async (req, res) => {
 };
 
 exports.requestWithdrawal = async (req, res) => {
-    const { amount, method, proof } = req.body; // proof aqui seria o número de telefone do user
+    const { amount, method, proof } = req.body;
     const user = req.user;
     const config = (await PlatformConfig.findOne({ configKey: 'main' })) || initialConfig;
 
@@ -270,12 +268,11 @@ exports.requestWithdrawal = async (req, res) => {
             type: 'withdrawal',
             method,
             amount,
-            proof, // salva o número de telefone do usuário para o admin ver
+            proof, 
             status: 'pending',
         });
         res.status(201).json({ message: 'Pedido de levantamento enviado. Aguarde a aprovação.' });
     } catch (error) {
-        // Rollback
         user.balance += amount;
         await user.save();
         res.status(500).json({ message: 'Erro ao processar pedido.', error: error.message });
@@ -285,7 +282,7 @@ exports.requestWithdrawal = async (req, res) => {
 // Game Controllers
 exports.getGameLobbies = async (req, res) => {
     try {
-        const lobbies = await Game.find({ status: 'waiting' })
+        const lobbies = await Game.find({ status: 'waiting', inviteCode: null }) // Apenas jogos públicos
             .populate('players', 'username avatar userId')
             .sort({ createdAt: -1 });
         res.status(200).json(lobbies);
@@ -303,6 +300,24 @@ exports.getMatchHistory = async (req, res) => {
         res.status(200).json(history);
     } catch (error) {
         res.status(500).json({ message: 'Erro ao buscar histórico.', error: error.message });
+    }
+};
+
+exports.findGameByInviteCode = async (req, res) => {
+    try {
+        const { inviteCode } = req.params;
+        const game = await Game.findOne({ 
+            inviteCode: inviteCode.toUpperCase(), 
+            status: 'waiting' 
+        });
+
+        if (!game) {
+            return res.status(404).json({ message: 'Nenhuma partida à espera foi encontrada com este código.' });
+        }
+
+        res.status(200).json(game);
+    } catch (error) {
+        res.status(500).json({ message: 'Erro ao procurar a partida.', error: error.message });
     }
 };
 
@@ -399,7 +414,7 @@ exports.adminGetTransactions = async (req, res) => {
 
 exports.adminProcessTransaction = async (req, res) => {
     const { transactionId } = req.params;
-    const { status, adminNotes } = req.body; // 'approved' ou 'rejected'
+    const { status, adminNotes } = req.body;
     try {
         const transaction = await Transaction.findOne({ transactionId });
         if (!transaction || transaction.status !== 'pending') {
@@ -412,10 +427,9 @@ exports.adminProcessTransaction = async (req, res) => {
             if (transaction.type === 'deposit') {
                 user.balance += transaction.amount;
             }
-            // para 'withdrawal' o saldo já foi debitado
         } else if (status === 'rejected') {
             if (transaction.type === 'withdrawal') {
-                user.balance += transaction.amount; // devolve o saldo
+                user.balance += transaction.amount; 
             }
         } else {
              return res.status(400).json({ message: 'Status inválido.' });

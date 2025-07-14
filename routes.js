@@ -72,6 +72,7 @@ router.post('/transactions/withdrawal', authMiddleware, controllers.requestWithd
 // --- Rotas de Jogo (Protegidas) ---
 router.get('/games/lobbies', authMiddleware, controllers.getGameLobbies);
 router.get('/games/history', authMiddleware, controllers.getMatchHistory);
+router.get('/games/find-by-code/:inviteCode', authMiddleware, controllers.findGameByInviteCode);
 
 // --- Rotas de Configuração Pública ---
 router.get('/platform/config', controllers.getPublicPlatformConfig);
