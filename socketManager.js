@@ -1,6 +1,6 @@
 const { Game, User } = require('./models');
 const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition } = require('./gameLogic');
-const config =require('./config');
+const config = require('./config');
 const mongoose = require('mongoose');
 
 let activeLobbies = {}; 
@@ -33,8 +33,6 @@ const socketManager = (io) => {
             }
             
             socket.join(gameId);
-
-            // Transmite o estado atual do jogo para o jogador que acabou de entrar/reconectar
             io.to(socket.id).emit('game_state', game);
         });
 
@@ -62,7 +60,7 @@ const socketManager = (io) => {
                 betAmount,
                 lobbyDescription: description,
                 timeLimit,
-                ready: [] // Adiciona o campo ready
+                ready: []
             });
             await game.save();
             
@@ -75,6 +73,7 @@ const socketManager = (io) => {
             };
 
             io.emit('lobby_update', Object.values(activeLobbies));
+            // A LINHA DE REDIRECIONAMENTO FOI REMOVIDA DAQUI. O CRIADOR PERMANECE NO LOBBY.
         });
         
         socket.on('create_private_game', async ({ betAmount }) => {
@@ -97,12 +96,12 @@ const socketManager = (io) => {
                 betAmount,
                 isPrivate: true,
                 privateGameCode: privateCode,
-                ready: [] // Adiciona o campo ready
+                ready: []
             });
             await game.save();
             
-            socket.join(game.id);
-            io.to(socket.id).emit('private_game_created', { gameId: game.id, privateCode: game.privateGameCode });
+            // EMITE UM EVENTO APENAS PARA O CRIADOR MOSTRAR O CÓDIGO, SEM REDIRECIONAR.
+            io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.privateGameCode });
         });
 
         socket.on('join_game', async ({ gameId, privateCode }) => {
@@ -116,27 +115,31 @@ const socketManager = (io) => {
                 gameToJoin = await Game.findOne({ privateGameCode, status: 'waiting' });
             }
 
-            if (!gameToJoin) return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada.' });
-            if (gameToJoin.players.length > 1) return io.to(socket.id).emit('error_message', { message: 'Esta partida já está cheia.' });
+            if (!gameToJoin || gameToJoin.status !== 'waiting') return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada ou já iniciada.' });
             if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Você não pode entrar na sua própria partida.' });
             if (joiner.balance < gameToJoin.betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
 
-            // NÃO debita o saldo ainda, faremos isso quando o jogo começar
-            
+            const creatorId = gameToJoin.players[0];
             gameToJoin.players.push(joinerId);
             await gameToJoin.save();
 
-            const populatedGame = await Game.findById(gameToJoin.id).populate('players', 'username avatar');
-            
-            socket.join(populatedGame.id);
-            // Emite o evento para AMBOS os jogadores com a partida completa
-            io.to(populatedGame.id).emit('game_state', populatedGame);
-            
+            // Adiciona o jogador que entrou (oponente) à sala do jogo
+            socket.join(gameToJoin.id);
+
+            // Adiciona o criador (que estava no lobby) à sala do jogo
+            const creatorSocketId = activeUsers[creatorId];
+            if (creatorSocketId) {
+                const creatorSocket = io.sockets.sockets.get(creatorSocketId);
+                if (creatorSocket) {
+                    creatorSocket.join(gameToJoin.id);
+                }
+            }
+
             delete activeLobbies[gameToJoin.id];
             io.emit('lobby_update', Object.values(activeLobbies));
             
-            // Redireciona o jogador que entrou
-            io.to(socket.id).emit('navigate_to_game', { gameId: populatedGame.id });
+            // AGORA SIM: Emite o evento de redirecionamento para TODOS na sala (ambos os jogadores).
+            io.to(gameToJoin.id).emit('navigate_to_game', { gameId: gameToJoin.id });
         });
         
         socket.on('player_ready', async ({ gameId }) => {
@@ -146,11 +149,9 @@ const socketManager = (io) => {
 
             game.ready.push(userId);
             
-            // Notifica todos na sala que um jogador ficou pronto
             io.to(gameId).emit('update_ready_status', { userId });
 
-            if (game.ready.length === 2) {
-                // Debitar saldos
+            if (game.players.length === 2 && game.ready.length === 2) {
                 const player1 = await User.findById(game.players[0]);
                 const player2 = await User.findById(game.players[1]);
                 player1.balance -= game.betAmount;
@@ -180,7 +181,7 @@ const socketManager = (io) => {
             const playerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
 
             if (!game || !playerId || !game.currentPlayer.equals(playerId)) {
-                return io.to(socket.id).emit('error_message', { message: 'Jogada inválida ou não é a sua vez.' });
+                return;
             }
 
             const playerSymbol = game.players[0].equals(playerId) ? 'b' : 'w';
@@ -192,7 +193,7 @@ const socketManager = (io) => {
             );
 
             if (!isValidMove) {
-                return io.to(socket.id).emit('error_message', { message: 'Movimento ilegal.' });
+                return;
             }
             
             const fullMove = possibleMoves.find(pMove => 
@@ -208,23 +209,21 @@ const socketManager = (io) => {
             const winState = checkWinCondition(game.boardState, playerSymbol === 'b' ? 'w' : 'b');
 
             if (winState.winner) {
-                const winnerId = playerId;
-                const loserId = opponentId;
                 game.status = 'completed';
-                game.winner = winnerId;
+                game.winner = playerId;
                 
-                const winner = await User.findById(winnerId);
+                const winner = await User.findById(playerId);
                 const commission = game.betAmount * config.platformCommission;
                 const prize = (game.betAmount * 2) - commission;
                 winner.balance += prize;
                 winner.stats.wins += 1;
                 await winner.save();
 
-                const loser = await User.findById(loserId);
+                const loser = await User.findById(opponentId);
                 loser.stats.losses += 1;
                 await loser.save();
                 
-                io.to(game.id).emit('game_over', { winner: winnerId, boardState: game.boardState });
+                io.to(game.id).emit('game_over', { winner: playerId, boardState: game.boardState });
 
             } else {
                 io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer });
