@@ -2,8 +2,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
-const { User, Transaction, Game } = require('./models');
-const config = require('./config');
+const { User, Transaction, Game, Setting } = require('./models'); // Importa o novo modelo Setting
+const defaultConfig = require('./config'); // Usado para valores padrão
 const { sendPasswordResetEmail, generateNumericId } = require('./utils');
 
 cloudinary.config({
@@ -11,6 +11,17 @@ cloudinary.config({
     api_key: process.env.CLOUDINARY_API_KEY,
     api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Helper para obter as configurações da base de dados ou criar se não existirem
+const getLiveSettings = async () => {
+    let settings = await Setting.findOne({ singleton: 'main_settings' });
+    if (!settings) {
+        console.log('Nenhuma configuração encontrada, criando a partir do padrão...');
+        settings = await Setting.create({ singleton: 'main_settings', ...defaultConfig });
+    }
+    return settings;
+};
+
 
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -82,17 +93,17 @@ const controllers = {
         if (!user) {
             return res.status(200).json({ message: 'Se um utilizador com este email existir, um código de recuperação foi enviado.' });
         }
-
+        
+        const settings = await getLiveSettings();
         const resetCode = generateNumericId(6);
         user.passwordResetToken = crypto.createHash('sha256').update(resetCode).digest('hex');
-        
-        // --- CORREÇÃO FINAL APLICADA AQUI ---
-        user.passwordResetExpires = Date.now() + (config.passwordResetTokenExpiresIn * 60 * 1000);
+        user.passwordResetExpires = Date.now() + (settings.passwordResetTokenExpiresIn * 60 * 1000);
 
         await user.save({ validateBeforeSave: false });
 
         try {
-            await sendPasswordResetEmail(user.email, resetCode);
+            // A função sendPasswordResetEmail precisa ser atualizada para aceitar os novos parâmetros
+            await sendPasswordResetEmail(user.email, resetCode, settings.platformName, settings.passwordResetTokenExpiresIn);
             res.status(200).json({ message: 'Email com código de recuperação enviado.' });
         } catch (error) {
             console.error("Erro ao enviar email:", error);
@@ -136,8 +147,9 @@ const controllers = {
         }
     },
 
-    getPublicPaymentMethods: (req, res) => {
-        const publicMethods = config.paymentMethods.map(m => ({
+    getPublicPaymentMethods: async (req, res) => {
+        const settings = await getLiveSettings();
+        const publicMethods = settings.paymentMethods.map(m => ({
             name: m.name,
             number: m.accountNumber,
             holder: m.accountName,
@@ -220,11 +232,13 @@ const controllers = {
 
     createDeposit: async (req, res) => {
         const { amount, method, proofText } = req.body;
+        const settings = await getLiveSettings();
+        
         if (!amount || !method || (!proofText && !req.file)) {
             return res.status(400).json({ message: 'Dados insuficientes para o depósito.' });
         }
-        if (Number(amount) < config.minDeposit) {
-            return res.status(400).json({ message: `O depósito mínimo é de ${config.minDeposit} MT.` });
+        if (Number(amount) < settings.minDeposit) {
+            return res.status(400).json({ message: `O depósito mínimo é de ${settings.minDeposit} MT.` });
         }
         let proofData = proofText;
         if (req.file) {
@@ -254,11 +268,13 @@ const controllers = {
     createWithdrawal: async (req, res) => {
         const { amount, method, holderName, phoneNumber } = req.body;
         const user = await User.findById(req.user.id);
+        const settings = await getLiveSettings();
+        
         if (!amount || !method || !holderName || !phoneNumber) {
              return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
         }
-        if (Number(amount) < config.minWithdrawal) {
-            return res.status(400).json({ message: `O levantamento mínimo é de ${config.minWithdrawal} MT.` });
+        if (Number(amount) < settings.minWithdrawal) {
+            return res.status(400).json({ message: `O levantamento mínimo é de ${settings.minWithdrawal} MT.` });
         }
         if (user.balance < Number(amount)) {
             return res.status(400).json({ message: 'Saldo insuficiente.' });
@@ -318,6 +334,8 @@ const controllers = {
             res.status(500).json({ message: 'Erro no servidor ao tentar remover a partida.' });
         }
     },
+
+    // --- ADMIN CONTROLLERS ---
 
     getAllUsers: async (req, res) => {
         const users = await User.find({}).select('-password');
@@ -388,39 +406,73 @@ const controllers = {
     },
     
     getDashboardStats: async (req, res) => {
+        const settings = await getLiveSettings();
         const totalDeposited = await Transaction.aggregate([ { $match: { type: 'deposit', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
         const totalWithdrawn = await Transaction.aggregate([ { $match: { type: 'withdrawal', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
-        const totalCommission = await Game.aggregate([ { $match: { status: 'completed', betAmount: { $exists: true } } }, { $group: { _id: null, total: { $sum: { $multiply: ["$betAmount", config.platformCommission] } } } } ]);
+        const totalCommission = await Game.aggregate([ { $match: { status: 'completed', betAmount: { $exists: true } } }, { $group: { _id: null, total: { $sum: { $multiply: ["$betAmount", settings.platformCommission] } } } } ]);
         res.json({
             totalDeposited: totalDeposited.length > 0 ? totalDeposited[0].total : 0,
             totalWithdrawn: totalWithdrawn.length > 0 ? totalWithdrawn[0].total : 0,
-            totalCommission: totalCommission.length > 0 ? totalCommission[0].total * 2 : 0,
+            totalCommission: totalCommission.length > 0 ? totalCommission[0].total * 2 : 0, // Multiplicado por 2 porque a aposta é de ambos
             totalUsers: await User.countDocuments(),
             totalGames: await Game.countDocuments({ status: 'completed' }),
         });
     },
     
-    getPlatformSettings: (req, res) => {
-        res.json(config);
+    getPlatformSettings: async (req, res) => {
+        try {
+            const settings = await getLiveSettings();
+            res.json(settings);
+        } catch (error) {
+            res.status(500).json({ message: "Erro ao obter as configurações." });
+        }
     },
     
     updatePlatformSettings: async (req, res) => {
-        // ... Lógica para atualizar configurações
-        res.status(200).json({ message: "Configurações atualizadas." });
+        try {
+            const { platformCommission, minDeposit, minBet } = req.body;
+            const updateData = {};
+
+            if (platformCommission !== undefined) updateData.platformCommission = platformCommission / 100;
+            if (minDeposit !== undefined) updateData.minDeposit = minDeposit;
+            if (minBet !== undefined) updateData.minBet = minBet;
+
+            await Setting.findOneAndUpdate(
+                { singleton: 'main_settings' },
+                { $set: updateData },
+                { new: true, upsert: true }
+            );
+
+            res.status(200).json({ message: "Configurações gerais atualizadas com sucesso." });
+        } catch (error) {
+             res.status(500).json({ message: "Erro ao atualizar as configurações.", error: error.message });
+        }
     },
     
-    getPaymentMethodsAdmin: (req, res) => {
-        res.json(config.paymentMethods);
+    getPaymentMethodsAdmin: async (req, res) => {
+        try {
+            const settings = await getLiveSettings();
+            res.json(settings.paymentMethods);
+        } catch (error) {
+            res.status(500).json({ message: "Erro ao obter métodos de pagamento." });
+        }
     },
     
-    updatePaymentMethods: (req, res) => {
+    updatePaymentMethods: async (req, res) => {
         const { methods } = req.body;
-        if(Array.isArray(methods)) {
-            // ... Lógica para salvar os métodos de pagamento (num ficheiro ou DB)
-            config.paymentMethods = methods; // Exemplo simples
-            res.json({ message: 'Métodos de pagamento atualizados.', newMethods: config.paymentMethods });
-        } else {
-            res.status(400).json({ message: 'Formato inválido.' });
+        if (!Array.isArray(methods)) {
+            return res.status(400).json({ message: 'Formato inválido. "methods" deve ser um array.' });
+        }
+        
+        try {
+            const updatedSettings = await Setting.findOneAndUpdate(
+                { singleton: 'main_settings' },
+                { $set: { paymentMethods: methods } },
+                { new: true, upsert: true, runValidators: true }
+            );
+            res.json({ message: 'Métodos de pagamento atualizados.', newMethods: updatedSettings.paymentMethods });
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao salvar os métodos de pagamento.', error: error.message });
         }
     }
 };
