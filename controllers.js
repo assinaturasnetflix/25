@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const jwt = 'jsonwebtoken';
+const jwt = require('jsonwebtoken'); // <--- CORREÇÃO APLICADA AQUI
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
 const { User, Transaction, Game } = require('./models');
