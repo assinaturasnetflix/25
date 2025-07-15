@@ -24,7 +24,6 @@ const isOpponent = (playerPiece, targetPiece) => {
     return playerInitial !== targetInitial;
 };
 
-// Regra da Dama: Captura e aterra em qualquer casa livre depois
 const findCaptureMovesForKing = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length === 1) return [];
@@ -45,11 +44,11 @@ const findCaptureMovesForKing = (board, r, c) => {
 
             if (targetCell) {
                 if (isOpponent(piece, targetCell)) {
-                    if (opponentFound) break; // Já encontrou um oponente, não pode saltar dois
+                    if (opponentFound) break;
                     opponentFound = targetCell;
                     opponentPos = [nr, nc];
                 } else {
-                    break; 
+                    break;
                 }
             } else {
                 if (opponentFound) {
@@ -65,7 +64,6 @@ const findCaptureMovesForKing = (board, r, c) => {
     return moves;
 };
 
-// Regra do Peão: Captura e aterra na PRIMEIRA casa livre depois
 const findCaptureMovesForPawn = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length > 1) return [];
@@ -90,7 +88,6 @@ const findCaptureMovesForPawn = (board, r, c) => {
     return moves;
 };
 
-// Regra do Peão: Movimento simples para a frente
 const findSimpleMoves = (board, r, c) => {
     const piece = board[r][c];
     if (!piece) return [];
@@ -106,7 +103,7 @@ const findSimpleMoves = (board, r, c) => {
                 moves.push({ from: [r, c], to: [nr, nc], captured: [] });
             }
         }
-    } else { // Regra da Dama: Movimento livre na diagonal
+    } else {
         const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         for (const [dr, dc] of directions) {
             for (let i = 1; i < 8; i++) {
@@ -143,7 +140,6 @@ const applyMoveToBoard = (board, move) => {
     return newBoard;
 };
 
-// Regra: Captura múltipla e obrigatória (maior sequência)
 const getPossibleMovesForPlayer = (board, playerColor) => {
     let allPlayerPieces = [];
     for (let r = 0; r < 8; r++) {
@@ -178,51 +174,48 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
 };
 
 const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c], to: null, captured: [] }) => {
-    let finalSequences = [];
     const piece = currentBoard[r][c];
     if (!piece) return [];
     
     const isKing = piece.length > 1;
     const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
     
+    // Se não há mais movimentos de captura a partir desta posição
     if (captureMoves.length === 0) {
+        // Se já capturamos pelo menos uma peça, esta é uma sequência válida.
         if (sequence.captured.length > 0) {
-            sequence.to = [r, c];
-            finalSequences.push(sequence);
+            sequence.to = [r, c]; // Onde a peça parou
+            return [sequence];
         }
-        return finalSequences;
+        // Se não capturamos nada e não há movimentos de captura, retorna vazio.
+        return [];
     }
 
+    let allPossiblePaths = [];
     for (const move of captureMoves) {
         const nextBoard = applyMoveToBoard(currentBoard, move);
         const [nextR, nextC] = move.to;
         
-        const wasPromoted = !isKing && (nextBoard[nextR][nextC].length > 1);
-
         const newSequence = {
             from: sequence.from,
             to: null,
             captured: [...sequence.captured, ...move.captured]
         };
+
+        const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
         
-        if (isKing || wasPromoted) {
-            const nextSequences = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
-            if(nextSequences.length > 0) {
-                finalSequences.push(...nextSequences);
-            } else {
-                newSequence.to = [nextR, nextC];
-                finalSequences.push(newSequence);
-            }
+        if (continuingPaths.length > 0) {
+            allPossiblePaths.push(...continuingPaths);
         } else {
+            // Se não há mais capturas a partir da nova posição, esta sequência termina aqui.
             newSequence.to = [nextR, nextC];
-            finalSequences.push(newSequence);
+            allPossiblePaths.push(newSequence);
         }
     }
     
-    return finalSequences;
+    return allPossiblePaths;
 };
 
-// Regra: Fim de jogo por falta de peças ou movimentos
 const checkWinCondition = (board, playerWhoJustMovedColor) => {
     const opponentColor = playerWhoJustMovedColor === 'w' ? 'b' : 'w';
     
