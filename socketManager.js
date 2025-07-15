@@ -63,7 +63,8 @@ const socketManager = (io) => {
                     gameId: game.id,
                     creator: { _id: creator._id, username: creator.username, avatar: creator.avatar },
                     betAmount: game.betAmount,
-                    description: game.lobbyDescription
+                    description: game.lobbyDescription,
+                    createdAt: game.createdAt // Campo adicionado para o cronómetro
                 };
 
                 const expiryTimer = setTimeout(async () => {
