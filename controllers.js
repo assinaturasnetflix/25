@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
+const jwt = 'jsonwebtoken';
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
 const { User, Transaction, Game } = require('./models');
@@ -102,6 +102,9 @@ const controllers = {
 
     resetPassword: async (req, res) => {
         const { code, password } = req.body;
+        if (!code || !password) {
+            return res.status(400).json({ message: 'Por favor, forneça o código e a nova senha.' });
+        }
         if (password.length < 6) {
              return res.status(400).json({ message: 'A nova senha deve ter no mínimo 6 caracteres.' });
         }
@@ -271,7 +274,8 @@ const controllers = {
             await user.save();
             res.status(201).json(transaction);
         } catch(e) {
-            user.balance += Number(amount); // Reverte o balanço se a transação falhar
+            user.balance += Number(amount);
+            await user.save();
             res.status(500).json({ message: 'Erro ao criar o pedido de levantamento.' });
         }
     },
@@ -282,11 +286,41 @@ const controllers = {
     },
     
     getMyGames: async (req, res) => {
-        const games = await Game.find({ players: req.user.id })
-            .populate('players', 'username avatar')
-            .populate('winner', 'username')
-            .sort({ createdAt: -1 });
+        const games = await Game.find({ 
+            players: req.user.id,
+            hiddenBy: { $ne: req.user.id }
+        })
+        .populate('players', 'username avatar')
+        .populate('winner', 'username')
+        .sort({ createdAt: -1 });
         res.status(200).json(games);
+    },
+    
+    hideGameFromHistory: async (req, res) => {
+        try {
+            const game = await Game.findById(req.params.id);
+
+            if (!game) {
+                return res.status(404).json({ message: 'Partida não encontrada.' });
+            }
+            if (!game.players.includes(req.user.id)) {
+                return res.status(403).json({ message: 'Você não tem permissão para alterar esta partida.' });
+            }
+            const nonRemovableStatus = ['waiting', 'in_progress'];
+            if (nonRemovableStatus.includes(game.status)) {
+                return res.status(400).json({ message: 'Não é possível remover uma partida em andamento.' });
+            }
+
+            if (!game.hiddenBy.includes(req.user.id)) {
+                game.hiddenBy.push(req.user.id);
+                await game.save();
+            }
+
+            res.status(200).json({ message: 'Partida removida do histórico com sucesso.' });
+
+        } catch (error) {
+            res.status(500).json({ message: 'Erro no servidor ao tentar remover a partida.' });
+        }
     },
 
     getAllUsers: async (req, res) => {
@@ -389,8 +423,13 @@ const controllers = {
     },
     
     updatePlatformSettings: (req, res) => {
-        // ... (lógica para validar e guardar as configurações)
-        res.json({ message: 'Configurações atualizadas.' });
+        const { commission, minDeposit, minBet } = req.body;
+        
+        if(commission) config.platformCommission = parseFloat(commission) / 100;
+        if(minDeposit) config.minDeposit = parseFloat(minDeposit);
+        if(minBet) config.minBet = parseFloat(minBet);
+
+        res.json({ message: 'Configurações atualizadas.', newConfig: config });
     },
     
     getPaymentMethodsAdmin: (req, res) => {

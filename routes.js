@@ -1,7 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
-const path = 'path';
+const path = require('path');
 const { User } = require('./models');
 const controllers = require('./controllers');
 
@@ -23,7 +23,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({ 
     storage: storage,
     fileFilter: fileFilter,
-    limits: { fileSize: 2 * 1024 * 1024 } // Limite de 2MB por ficheiro
+    limits: { fileSize: 2 * 1024 * 1024 }
 });
 
 const protect = async (req, res, next) => {
@@ -77,6 +77,7 @@ router.post('/transactions/withdrawal', protect, controllers.createWithdrawal);
 router.get('/transactions/me', protect, controllers.getMyTransactions);
 
 router.get('/games/me', protect, controllers.getMyGames);
+router.delete('/games/me/:id', protect, controllers.hideGameFromHistory);
 
 router.get('/admin/users', protect, admin, controllers.getAllUsers);
 router.put('/admin/users/:id/toggle-block', protect, admin, controllers.toggleBlockUser);

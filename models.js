@@ -51,7 +51,8 @@ const gameSchema = new mongoose.Schema({
         captured: [{ r: Number, c: Number }],
         timestamp: { type: Date, default: Date.now }
     }],
-    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // <- NOVO CAMPO ADICIONADO
 }, { timestamps: true });
 
 const User = mongoose.model('User', userSchema);
