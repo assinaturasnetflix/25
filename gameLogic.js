@@ -76,7 +76,7 @@ const findCaptureMovesForPawn = (board, r, c) => {
         const nnr = r + dr * 2;
         const nnc = c + dc * 2;
 
-        if (nnr >= 0 && nnc < 8 && nnc >= 0 && board[nnr][nnc] === E) {
+        if (nnr >= 0 && nnr < 8 && nc >= 0 && nc < 8 && nnc >= 0 && nnc < 8 && board[nnr][nnc] === E) {
             const jumpedPiece = board[nr][nc];
             if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
                 moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
@@ -198,20 +198,15 @@ const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c],
             captured: [...sequence.captured, ...move.captured]
         };
         
-        // **LÓGICA CORRIGIDA AQUI**
-        // A peça só continua a capturar se for uma Dama ou se acabou de ser promovida.
-        // Um peão normal não entra neste loop recursivo.
         if (isKing || wasPromoted) {
             const nextSequences = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
             if(nextSequences.length > 0) {
                 finalSequences.push(...nextSequences);
             } else {
-                // Se uma dama não puder continuar a capturar, a sequência termina onde ela aterrou.
                 newSequence.to = [nextR, nextC];
                 finalSequences.push(newSequence);
             }
         } else {
-            // Se for um peão, a sequência termina obrigatoriamente aqui.
             newSequence.to = [nextR, nextC];
             finalSequences.push(newSequence);
         }
