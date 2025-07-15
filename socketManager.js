@@ -3,9 +3,8 @@ const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWi
 const mongoose = require('mongoose');
 
 let activeUsers = {};
-let activeLobbies = {}; // Agora vai armazenar também o ID do temporizador
+let activeLobbies = {};
 
-// Helper para obter as configurações da base de dados
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
@@ -43,7 +42,9 @@ const socketManager = (io) => {
             if (!creator || creator.balance < betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
             if (betAmount < settings.minBet) return io.to(socket.id).emit('error_message', { message: `A aposta mínima é ${settings.minBet} MT.` });
 
-            const game = new Game({
+            // --- CORREÇÃO APLICADA AQUI ---
+            // 1. Prepara os dados base do jogo.
+            const gameData = {
                 players: [creatorId],
                 boardState: createInitialBoard(),
                 currentPlayer: creatorId,
@@ -51,10 +52,18 @@ const socketManager = (io) => {
                 betAmount,
                 lobbyDescription: description,
                 isPrivate,
-                gameCode: isPrivate ? `P${Math.random().toString().substring(2, 8)}` : null,
                 ready: []
-            });
+            };
+
+            // 2. Adiciona o gameCode APENAS se o jogo for privado.
+            if (isPrivate) {
+                gameData.gameCode = `P${Math.random().toString().substring(2, 8)}`;
+            }
+            
+            // 3. Cria o jogo com os dados corretos.
+            const game = new Game(gameData);
             await game.save();
+            // --- FIM DA CORREÇÃO ---
             
             if (isPrivate) {
                 io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.gameCode });
@@ -64,7 +73,7 @@ const socketManager = (io) => {
                     creator: { _id: creator._id, username: creator.username, avatar: creator.avatar },
                     betAmount: game.betAmount,
                     description: game.lobbyDescription,
-                    createdAt: game.createdAt // <-- LINHA CORRIGIDA E ADICIONADA
+                    createdAt: game.createdAt
                 };
 
                 const expiryTimer = setTimeout(async () => {
