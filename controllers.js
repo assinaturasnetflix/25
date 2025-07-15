@@ -19,7 +19,6 @@ const generateToken = (id) => {
 };
 
 const controllers = {
-    // ... (registerUser, loginUser permanecem iguais)
     registerUser: async (req, res) => {
         const { username, email, password } = req.body;
         if (!username || !email || !password) { return res.status(400).json({ message: 'Por favor, preencha todos os campos.' }); }
@@ -42,22 +41,21 @@ const controllers = {
         } else { res.status(401).json({ message: 'Email ou senha inválidos.' }); }
     },
 
-    // --- FUNÇÃO CORRIGIDA ---
     forgotPassword: async (req, res) => {
         const { email } = req.body;
         const user = await User.findOne({ email: email.toLowerCase() });
 
         if (!user) {
-            // Mesmo que o utilizador não exista, enviamos uma resposta de sucesso
-            // para não revelar quais emails estão registados no sistema.
             return res.status(200).json({ message: 'Se um utilizador com este email existir, um código de recuperação foi enviado.' });
         }
 
         const resetCode = generateNumericId(6);
 
-        // LÓGICA DE HASH PADRONIZADA
         user.passwordResetToken = crypto.createHash('sha256').update(resetCode).digest('hex');
-        user.passwordResetExpires = Date.now() + (config.passwordResetCodeValidity * 60 * 1000); // 15 minutos
+        
+        // --- AQUI ESTÁ A CORREÇÃO ---
+        // Usando o nome correto da variável do seu config.js
+        user.passwordResetExpires = Date.now() + (config.passwordResetTokenExpiresIn * 60 * 1000);
 
         await user.save({ validateBeforeSave: false });
 
@@ -73,7 +71,6 @@ const controllers = {
         }
     },
 
-    // --- FUNÇÃO CORRIGIDA ---
     resetPassword: async (req, res) => {
         const { code, password } = req.body;
         
@@ -81,13 +78,12 @@ const controllers = {
              return res.status(400).json({ message: 'Por favor, forneça o código e uma nova senha com no mínimo 6 caracteres.' });
         }
         
-        // LÓGICA DE HASH PADRONIZADA (igual à de cima)
         const hashedToken = crypto.createHash('sha256').update(code).digest('hex');
 
         try {
             const user = await User.findOne({
                 passwordResetToken: hashedToken,
-                passwordResetExpires: { $gt: Date.now() }, // Verifica se não expirou
+                passwordResetExpires: { $gt: Date.now() },
             });
 
             if (!user) {
@@ -108,9 +104,9 @@ const controllers = {
         }
     },
 
-    // ... (todas as outras funções permanecem exatamente iguais)
+    // ... (O resto do arquivo continua exatamente igual)
     getPublicPaymentMethods: (req, res) => {
-        const publicMethods = config.paymentMethods.map(m => ({ name: m.name, number: m.number, holder: m.holder, instructions: m.instructions }));
+        const publicMethods = config.paymentMethods.map(m => ({ name: m.name, number: m.accountNumber, holder: m.accountName, instructions: m.instructions }));
         res.json(publicMethods);
     },
     getMe: async (req, res) => {
