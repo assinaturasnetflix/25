@@ -24,24 +24,19 @@ const socketManager = (io) => {
             }
             
             socket.join(gameId);
-
-            if (game.status === 'in_progress' && game.players.map(p => p.id).includes(userId)) {
-                 io.to(socket.id).emit('game_state', game);
-            } else if (game.status === 'waiting' && game.players.length === 2) {
-                 io.to(socket.id).emit('game_state', game);
-            }
+            io.to(socket.id).emit('game_state', game);
         });
 
         socket.on('get_lobby', () => {
              io.to(socket.id).emit('lobby_update', Object.values(activeLobbies));
         });
 
-        socket.on('create_lobby_game', async ({ betAmount, description, timeLimit }) => {
+        socket.on('create_lobby_game', async ({ betAmount, description }) => {
             const creatorId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const creator = await User.findById(creatorId);
 
             if (!creator || creator.balance < betAmount) {
-                return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente para criar esta aposta.' });
+                return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
             }
             if (betAmount < config.minBet) {
                 return io.to(socket.id).emit('error_message', { message: `A aposta mínima é ${config.minBet} MT.` });
@@ -54,7 +49,6 @@ const socketManager = (io) => {
                 status: 'waiting',
                 betAmount,
                 lobbyDescription: description,
-                timeLimit,
                 ready: []
             });
             await game.save();
@@ -63,25 +57,20 @@ const socketManager = (io) => {
                 gameId: game.id,
                 creator: { _id: creator._id, username: creator.username, avatar: creator.avatar },
                 betAmount: game.betAmount,
-                description: game.lobbyDescription,
-                timeLimit: game.timeLimit
+                description: game.lobbyDescription
             };
-
             io.emit('lobby_update', Object.values(activeLobbies));
         });
         
         socket.on('create_private_game', async ({ betAmount }) => {
             const creatorId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const creator = await User.findById(creatorId);
-
             if (!creator || creator.balance < betAmount) {
                 return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
             }
-             if (betAmount < config.minBet) {
+            if (betAmount < config.minBet) {
                 return io.to(socket.id).emit('error_message', { message: `A aposta mínima é ${config.minBet} MT.` });
             }
-
-            const privateCode = `P${Math.random().toString().substring(2, 8)}`;
             const game = new Game({
                 players: [creatorId],
                 boardState: createInitialBoard(),
@@ -89,18 +78,16 @@ const socketManager = (io) => {
                 status: 'waiting',
                 betAmount,
                 isPrivate: true,
-                privateGameCode: privateCode,
+                privateGameCode: `P${Math.random().toString().substring(2, 8)}`,
                 ready: []
             });
             await game.save();
-            
             io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.privateGameCode });
         });
 
         socket.on('join_game', async ({ gameId, privateCode }) => {
             const joinerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const joiner = await User.findById(joinerId);
-            
             let gameToJoin;
             if (gameId) {
                 gameToJoin = await Game.findById(gameId);
@@ -109,24 +96,25 @@ const socketManager = (io) => {
             }
 
             if (!gameToJoin || gameToJoin.status !== 'waiting') return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada ou já iniciada.' });
-            if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Você não pode entrar na sua própria partida.' });
+            if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Não pode entrar na sua própria partida.' });
             if (joiner.balance < gameToJoin.betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
 
-            const creatorId = gameToJoin.players[0];
             gameToJoin.players.push(joinerId);
             await gameToJoin.save();
             
             const populatedGame = await Game.findById(gameToJoin.id).populate('players', 'username avatar');
-
-            const creatorSocketId = activeUsers[creatorId.toString()];
+            const creatorId = populatedGame.players[0]._id.toString();
+            const creatorSocketId = activeUsers[creatorId];
             if (creatorSocketId) {
                 const creatorSocket = io.sockets.sockets.get(creatorSocketId);
                 if (creatorSocket) creatorSocket.join(populatedGame.id.toString());
             }
             socket.join(populatedGame.id.toString());
 
-            delete activeLobbies[populatedGame.id.toString()];
-            io.emit('lobby_update', Object.values(activeLobbies));
+            if (activeLobbies[populatedGame.id.toString()]) {
+                delete activeLobbies[populatedGame.id.toString()];
+                io.emit('lobby_update', Object.values(activeLobbies));
+            }
             
             io.to(populatedGame.id.toString()).emit('game_session_ready', populatedGame);
         });
@@ -134,7 +122,6 @@ const socketManager = (io) => {
         socket.on('player_ready', async ({ gameId }) => {
             const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const game = await Game.findById(gameId);
-
             if (!game || !userId || game.ready.map(id => id.toString()).includes(userId)) return;
 
             game.ready.push(new mongoose.Types.ObjectId(userId));
@@ -142,17 +129,15 @@ const socketManager = (io) => {
 
             io.to(gameId).emit('update_ready_status', { userId });
 
-            const updatedGame = await Game.findById(gameId);
-            if (updatedGame.players.length === 2 && updatedGame.ready.length === 2) {
-                const player1 = await User.findById(updatedGame.players[0]);
-                const player2 = await User.findById(updatedGame.players[1]);
-                player1.balance -= updatedGame.betAmount;
-                player2.balance -= updatedGame.betAmount;
+            if (game.ready.length === 2) {
+                const player1 = await User.findById(game.players[0]);
+                const player2 = await User.findById(game.players[1]);
+                player1.balance -= game.betAmount;
+                player2.balance -= game.betAmount;
                 await player1.save();
                 await player2.save();
-
-                updatedGame.status = 'in_progress';
-                await updatedGame.save();
+                game.status = 'in_progress';
+                await game.save();
                 io.to(gameId).emit('game_start_countdown');
             }
         });
@@ -188,7 +173,6 @@ const socketManager = (io) => {
                 JSON.stringify(pMove.from) === JSON.stringify(move.from) &&
                 JSON.stringify(pMove.to) === JSON.stringify(move.to)
             );
-            
             move.captured = fullMove.captured;
 
             game.boardState = applyMoveToBoard(game.boardState, move);
@@ -231,8 +215,7 @@ const socketManager = (io) => {
                 io.to(game.id).emit('game_over', finalStats);
 
             } else {
-                socket.to(game.id).emit('opponent_move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
-                socket.emit('my_move_confirmed', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
+                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
             }
         });
 
