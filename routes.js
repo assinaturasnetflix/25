@@ -20,7 +20,6 @@ const upload = multer({
     }
 });
 
-// Middleware de autenticação
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -28,6 +27,9 @@ const protect = async (req, res, next) => {
             token = req.headers.authorization.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET);
             req.user = await User.findById(decoded.id).select('-password');
+            if (!req.user) {
+                 return res.status(401).json({ message: 'Não autorizado, usuário não encontrado.' });
+            }
             if (req.user.isBlocked) {
                 return res.status(403).json({ message: 'Sua conta está bloqueada.' });
             }
@@ -65,6 +67,9 @@ router.post('/users/avatar', protect, upload.single('avatar'), controllers.uploa
 router.get('/users/profile/:id', controllers.getPublicProfile);
 router.get('/ranking', controllers.getRanking);
 
+// **NOVA ROTA PÚBLICA (mas protegida por login normal)**
+router.get('/payment-methods', protect, controllers.getPaymentMethodsPublic);
+
 // Rotas de Transações (Protegidas)
 router.post('/transactions/deposit', protect, upload.single('proof'), controllers.createDeposit);
 router.post('/transactions/withdrawal', protect, controllers.createWithdrawal);
@@ -82,7 +87,7 @@ router.put('/admin/transactions/:id/process', protect, admin, controllers.proces
 router.get('/admin/stats', protect, admin, controllers.getDashboardStats);
 router.get('/admin/settings', protect, admin, controllers.getPlatformSettings);
 router.put('/admin/settings', protect, admin, controllers.updatePlatformSettings);
-router.get('/admin/payment-methods', protect, admin, controllers.getPaymentMethods);
+router.get('/admin/payment-methods', protect, admin, controllers.getPaymentMethodsAdmin);
 router.put('/admin/payment-methods', protect, admin, controllers.updatePaymentMethods);
 
 module.exports = router;

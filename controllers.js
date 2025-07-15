@@ -119,6 +119,18 @@ const controllers = {
 
         res.status(200).json({ message: 'Senha redefinida com sucesso.' });
     },
+    
+    // **NOVA FUNÇÃO AQUI**
+    getPaymentMethodsPublic: (req, res) => {
+        // Apenas retorna os nomes e instruções, não dados sensíveis de gestão.
+        const publicMethods = config.paymentMethods.map(m => ({
+            name: m.name,
+            instructions: m.instructions,
+            accountNumber: m.accountNumber,
+            accountName: m.accountName
+        }));
+        res.json(publicMethods);
+    },
 
     // User Profile Controllers
     getMe: async (req, res) => {
@@ -361,7 +373,7 @@ const controllers = {
         res.json({ message: 'Configurações atualizadas.', newConfig: config });
     },
     
-    getPaymentMethods: (req, res) => {
+    getPaymentMethodsAdmin: (req, res) => {
         res.json(config.paymentMethods);
     },
     
