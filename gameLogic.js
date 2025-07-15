@@ -24,10 +24,9 @@ const isOpponent = (playerPiece, targetPiece) => {
     return playerInitial !== targetInitial;
 };
 
-// ** LÓGICA REFINADA PARA CAPTURAS DA DAMA **
 const findCaptureMovesForKing = (board, r, c) => {
     const piece = board[r][c];
-    if (!piece || piece.length === 1) return []; // Apenas Damas
+    if (!piece || piece.length === 1) return [];
     const moves = [];
     const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
@@ -39,21 +38,20 @@ const findCaptureMovesForKing = (board, r, c) => {
             const nr = r + dr * i;
             const nc = c + dc * i;
 
-            if (!(nr >= 0 && nr < 8 && nc >= 0 && nc < 8)) break; // Fora do tabuleiro
+            if (!(nr >= 0 && nr < 8 && nc >= 0 && nc < 8)) break;
 
             const targetCell = board[nr][nc];
 
             if (targetCell) {
                 if (isOpponent(piece, targetCell)) {
-                    if (opponentFound) break; // Já encontrou um oponente nesta linha, não pode saltar dois
+                    if (opponentFound) break;
                     opponentFound = targetCell;
                     opponentPos = [nr, nc];
                 } else {
-                    break; // Bloqueado pela própria peça
+                    break;
                 }
-            } else { // Casa vazia
+            } else {
                 if (opponentFound) {
-                    // Se encontrou um oponente, pode aterrar em qualquer casa vazia depois dele
                     moves.push({
                         from: [r, c],
                         to: [nr, nc],
@@ -68,9 +66,9 @@ const findCaptureMovesForKing = (board, r, c) => {
 
 const findCaptureMovesForPawn = (board, r, c) => {
     const piece = board[r][c];
-    if (!piece || piece.length > 1) return []; // Apenas Peões
+    if (!piece || piece.length > 1) return [];
     const moves = [];
-    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]]; // Peões podem capturar para trás
+    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
     for (const [dr, dc] of directions) {
         const nr = r + dr;
@@ -78,7 +76,7 @@ const findCaptureMovesForPawn = (board, r, c) => {
         const nnr = r + dr * 2;
         const nnc = c + dc * 2;
 
-        if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8 && board[nnr][nnc] === E) {
+        if (nnr >= 0 && nnc < 8 && nnc >= 0 && board[nnr][nnc] === E) {
             const jumpedPiece = board[nr][nc];
             if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
                 moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
@@ -93,7 +91,7 @@ const findSimpleMoves = (board, r, c) => {
     if (!piece) return [];
     const moves = [];
     
-    if (piece === W || piece === B) { // Movimento do Peão
+    if (piece === W || piece === B) {
         const forward = piece === W ? -1 : 1;
         const directions = [[forward, -1], [forward, 1]];
         for (const [dr, dc] of directions) {
@@ -103,7 +101,7 @@ const findSimpleMoves = (board, r, c) => {
                 moves.push({ from: [r, c], to: [nr, nc], captured: [] });
             }
         }
-    } else { // Movimento da Dama
+    } else {
         const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         for (const [dr, dc] of directions) {
             for (let i = 1; i < 8; i++) {
@@ -133,7 +131,6 @@ const applyMoveToBoard = (board, move) => {
         newBoard[capR][capC] = E;
     }
 
-    // Promove a Dama
     if ((piece === W && endR === 0) || (piece === B && endR === 7)) {
         newBoard[endR][endC] = piece === W ? WK : BK;
     }
@@ -141,7 +138,6 @@ const applyMoveToBoard = (board, move) => {
     return newBoard;
 };
 
-// ** LÓGICA PRINCIPAL REFINADA PARA CAPTURAS MÚLTIPLAS **
 const getPossibleMovesForPlayer = (board, playerColor) => {
     let allPlayerPieces = [];
     for (let r = 0; r < 8; r++) {
@@ -168,7 +164,6 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
         return allCaptureSequences.filter(seq => seq.captured.length === maxCaptures);
     }
     
-    // Se não houver capturas, retorna movimentos simples
     let allSimpleMoves = [];
     for (const [r, c] of allPlayerPieces) {
         allSimpleMoves.push(...findSimpleMoves(board, r, c));
@@ -179,11 +174,13 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
 const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c], to: null, captured: [] }) => {
     let finalSequences = [];
     const piece = currentBoard[r][c];
-    const captureMoves = piece.length > 1 ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
+    const isKing = piece.length > 1;
+
+    const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
     
     if (captureMoves.length === 0) {
         if (sequence.captured.length > 0) {
-            sequence.to = [r, c]; // Onde a peça parou
+            sequence.to = [r, c];
             finalSequences.push(sequence);
         }
         return finalSequences;
@@ -193,12 +190,7 @@ const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c],
         const nextBoard = applyMoveToBoard(currentBoard, move);
         const [nextR, nextC] = move.to;
         
-        // ** VERIFICA SE A PEÇA SE TORNOU DAMA DURANTE A CAPTURA **
-        const newPieceOnBoard = nextBoard[nextR][nextC];
-        let continuingPiece = piece;
-        if(newPieceOnBoard.length > 1) {
-            continuingPiece = newPieceOnBoard;
-        }
+        const wasPromoted = !isKing && (nextBoard[nextR][nextC].length > 1);
 
         const newSequence = {
             from: sequence.from,
@@ -206,22 +198,30 @@ const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c],
             captured: [...sequence.captured, ...move.captured]
         };
         
-        // Se a peça foi promovida, ela pode continuar a capturar como Dama no mesmo turno
-        const nextSequences = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
-        finalSequences.push(...nextSequences);
-    }
-
-    // Se nenhuma continuação for possível, esta sequência termina aqui.
-    if (finalSequences.length === 0 && sequence.captured.length > 0) {
-        sequence.to = [r, c];
-        return [sequence];
+        // **LÓGICA CORRIGIDA AQUI**
+        // A peça só continua a capturar se for uma Dama ou se acabou de ser promovida.
+        // Um peão normal não entra neste loop recursivo.
+        if (isKing || wasPromoted) {
+            const nextSequences = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
+            if(nextSequences.length > 0) {
+                finalSequences.push(...nextSequences);
+            } else {
+                // Se uma dama não puder continuar a capturar, a sequência termina onde ela aterrou.
+                newSequence.to = [nextR, nextC];
+                finalSequences.push(newSequence);
+            }
+        } else {
+            // Se for um peão, a sequência termina obrigatoriamente aqui.
+            newSequence.to = [nextR, nextC];
+            finalSequences.push(newSequence);
+        }
     }
     
     return finalSequences;
 };
 
-const checkWinCondition = (board, currentPlayerColor) => {
-    const opponentColor = currentPlayerColor === 'w' ? 'b' : 'w';
+const checkWinCondition = (board, playerWhoJustMovedColor) => {
+    const opponentColor = playerWhoJustMovedColor === 'w' ? 'b' : 'w';
     
     let opponentPiecesCount = 0;
     for (let r = 0; r < 8; r++) {
@@ -232,10 +232,14 @@ const checkWinCondition = (board, currentPlayerColor) => {
         }
     }
     
-    if (opponentPiecesCount === 0) return { winner: currentPlayerColor };
+    if (opponentPiecesCount === 0) {
+        return { winner: playerWhoJustMovedColor };
+    }
     
     const opponentMoves = getPossibleMovesForPlayer(board, opponentColor);
-    if (opponentMoves.length === 0) return { winner: currentPlayerColor };
+    if (opponentMoves.length === 0) {
+        return { winner: playerWhoJustMovedColor };
+    }
     
     return { winner: null };
 };
