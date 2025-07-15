@@ -26,7 +26,9 @@ const transactionSchema = new mongoose.Schema({
     method: { type: String, enum: ['M-Pesa', 'e-Mola'], required: true },
     amount: { type: Number, required: true, min: config.minDeposit },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    proof: { type: String, required: true },
+    proof: { type: String },
+    holderName: { type: String },
+    phoneNumber: { type: String },
     adminNotes: { type: String }
 }, { timestamps: true });
 
