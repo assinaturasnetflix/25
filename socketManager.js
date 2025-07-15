@@ -196,9 +196,9 @@ const socketManager = (io) => {
             game.currentPlayer = opponent._id;
             game.moveHistory.push({ player: playerId, from: {r: move.from[0], c: move.from[1]}, to: {r: move.to[0], c: move.to[1]}, captured: move.captured });
             
-            const winState = checkWinCondition(game.boardState, playerSymbol === 'b' ? 'w' : 'b');
-            
             await game.save();
+            
+            const winState = checkWinCondition(game.boardState, playerSymbol);
 
             if (winState.winner) {
                 const updatedGame = await Game.findById(gameId).populate('players', 'username avatar');
@@ -231,7 +231,7 @@ const socketManager = (io) => {
                 io.to(game.id).emit('game_over', finalStats);
 
             } else {
-                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move });
+                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
             }
         });
 
