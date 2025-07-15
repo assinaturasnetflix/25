@@ -31,7 +31,7 @@ const socketManager = (io) => {
              io.to(socket.id).emit('lobby_update', Object.values(activeLobbies));
         });
 
-        socket.on('create_lobby_game', async ({ betAmount, description }) => {
+        socket.on('create_lobby_game', async ({ betAmount, description, timeLimit }) => {
             const creatorId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             const creator = await User.findById(creatorId);
 
@@ -49,6 +49,7 @@ const socketManager = (io) => {
                 status: 'waiting',
                 betAmount,
                 lobbyDescription: description,
+                timeLimit,
                 ready: []
             });
             await game.save();
@@ -57,7 +58,8 @@ const socketManager = (io) => {
                 gameId: game.id,
                 creator: { _id: creator._id, username: creator.username, avatar: creator.avatar },
                 betAmount: game.betAmount,
-                description: game.lobbyDescription
+                description: game.lobbyDescription,
+                timeLimit: game.timeLimit
             };
             io.emit('lobby_update', Object.values(activeLobbies));
         });
@@ -99,12 +101,12 @@ const socketManager = (io) => {
             if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Não pode entrar na sua própria partida.' });
             if (joiner.balance < gameToJoin.betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
 
+            const creatorId = gameToJoin.players[0];
             gameToJoin.players.push(joinerId);
             await gameToJoin.save();
             
             const populatedGame = await Game.findById(gameToJoin.id).populate('players', 'username avatar');
-            const creatorId = populatedGame.players[0]._id.toString();
-            const creatorSocketId = activeUsers[creatorId];
+            const creatorSocketId = activeUsers[creatorId.toString()];
             if (creatorSocketId) {
                 const creatorSocket = io.sockets.sockets.get(creatorSocketId);
                 if (creatorSocket) creatorSocket.join(populatedGame.id.toString());
@@ -190,8 +192,11 @@ const socketManager = (io) => {
                 updatedGame.winner = playerId;
                 
                 const winnerUser = await User.findById(playerId);
-                const commission = updatedGame.betAmount * config.platformCommission;
-                const prize = (updatedGame.betAmount * 2) - commission;
+                
+                const totalPot = updatedGame.betAmount * 2;
+                const commission = totalPot * config.platformCommission;
+                const prize = totalPot - commission;
+                
                 winnerUser.balance += prize;
                 winnerUser.stats.wins += 1;
                 await winnerUser.save();
@@ -231,8 +236,11 @@ const socketManager = (io) => {
             game.winner = winner._id;
             
             const winnerUser = await User.findById(winner._id);
-            const commission = game.betAmount * config.platformCommission;
-            const prize = (game.betAmount * 2) - commission;
+
+            const totalPot = game.betAmount * 2;
+            const commission = totalPot * config.platformCommission;
+            const prize = totalPot - commission;
+
             winnerUser.balance += prize;
             winnerUser.stats.wins += 1;
             await winnerUser.save();
