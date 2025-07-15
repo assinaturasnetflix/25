@@ -24,6 +24,7 @@ const isOpponent = (playerPiece, targetPiece) => {
     return playerInitial !== targetInitial;
 };
 
+// Regra da Dama: Captura e aterra em qualquer casa livre depois
 const findCaptureMovesForKing = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length === 1) return [];
@@ -44,11 +45,11 @@ const findCaptureMovesForKing = (board, r, c) => {
 
             if (targetCell) {
                 if (isOpponent(piece, targetCell)) {
-                    if (opponentFound) break;
+                    if (opponentFound) break; // Já encontrou um oponente, não pode saltar dois
                     opponentFound = targetCell;
                     opponentPos = [nr, nc];
                 } else {
-                    break;
+                    break; 
                 }
             } else {
                 if (opponentFound) {
@@ -64,6 +65,7 @@ const findCaptureMovesForKing = (board, r, c) => {
     return moves;
 };
 
+// Regra do Peão: Captura e aterra na PRIMEIRA casa livre depois
 const findCaptureMovesForPawn = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length > 1) return [];
@@ -76,16 +78,19 @@ const findCaptureMovesForPawn = (board, r, c) => {
         const nnr = r + dr * 2;
         const nnc = c + dc * 2;
 
-        if (nnr >= 0 && nnr < 8 && nc >= 0 && nc < 8 && nnc >= 0 && nnc < 8 && board[nnr][nnc] === E) {
-            const jumpedPiece = board[nr][nc];
-            if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
-                moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
+        if (nnr >= 0 && nnr < 8 && nc >= 0 && nc < 8 && nnc >= 0 && nnc < 8) {
+            if(board[nnr][nnc] === E) {
+                const jumpedPiece = board[nr][nc];
+                if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
+                    moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
+                }
             }
         }
     }
     return moves;
 };
 
+// Regra do Peão: Movimento simples para a frente
 const findSimpleMoves = (board, r, c) => {
     const piece = board[r][c];
     if (!piece) return [];
@@ -101,7 +106,7 @@ const findSimpleMoves = (board, r, c) => {
                 moves.push({ from: [r, c], to: [nr, nc], captured: [] });
             }
         }
-    } else {
+    } else { // Regra da Dama: Movimento livre na diagonal
         const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         for (const [dr, dc] of directions) {
             for (let i = 1; i < 8; i++) {
@@ -138,6 +143,7 @@ const applyMoveToBoard = (board, move) => {
     return newBoard;
 };
 
+// Regra: Captura múltipla e obrigatória (maior sequência)
 const getPossibleMovesForPlayer = (board, playerColor) => {
     let allPlayerPieces = [];
     for (let r = 0; r < 8; r++) {
@@ -174,8 +180,9 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
 const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c], to: null, captured: [] }) => {
     let finalSequences = [];
     const piece = currentBoard[r][c];
+    if (!piece) return [];
+    
     const isKing = piece.length > 1;
-
     const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
     
     if (captureMoves.length === 0) {
@@ -215,6 +222,7 @@ const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c],
     return finalSequences;
 };
 
+// Regra: Fim de jogo por falta de peças ou movimentos
 const checkWinCondition = (board, playerWhoJustMovedColor) => {
     const opponentColor = playerWhoJustMovedColor === 'w' ? 'b' : 'w';
     
