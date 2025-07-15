@@ -162,7 +162,7 @@ const socketManager = (io) => {
              const game = await Game.findById(gameId);
              if(!game || !userId || !game.currentPlayer.equals(userId)) return;
 
-             const playerSymbol = game.players[0].equals(userId) ? 'b' : 'w';
+             const playerSymbol = game.players[0].toString() === userId.toString() ? 'b' : 'w';
              const moves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
              const filteredMoves = moves.filter(m => m.from[0] === from[0] && m.from[1] === from[1]);
              io.to(socket.id).emit('possible_moves', filteredMoves);
@@ -174,7 +174,7 @@ const socketManager = (io) => {
 
             if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
             
-            const playerSymbol = game.players[0]._id.equals(playerId) ? 'b' : 'w';
+            const playerSymbol = game.players[0]._id.toString() === playerId.toString() ? 'b' : 'w';
             const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
             
             const isValidMove = possibleMoves.some(pMove => 
@@ -231,7 +231,8 @@ const socketManager = (io) => {
                 io.to(game.id).emit('game_over', finalStats);
 
             } else {
-                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
+                socket.to(game.id).emit('opponent_move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
+                socket.emit('my_move_confirmed', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
             }
         });
 
