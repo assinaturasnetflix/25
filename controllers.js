@@ -5,7 +5,7 @@ const cloudinary = require('cloudinary').v2;
 const { User, Transaction, Game, Setting } = require('./models');
 const defaultConfig = require('./config');
 const { sendPasswordResetEmail, generateNumericId } = require('./utils');
-const axios = require('axios'); // Importa a nova dependência
+const axios = require('axios');
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -13,13 +13,10 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// --- NOVA FUNÇÃO HELPER PARA VERIFICAR O CAPTCHA ---
 async function verifyRecaptcha(token) {
     const secretKey = process.env.RECAPTCHA_SECRET_KEY;
     if (!secretKey) {
         console.error("Aviso de Segurança: A chave secreta do reCAPTCHA (RECAPTCHA_SECRET_KEY) não está definida no ficheiro .env. A verificação será ignorada.");
-        // Em um ambiente de produção real, você poderia retornar 'false' aqui para forçar a configuração.
-        // Para flexibilidade, vamos retornar 'true' se a chave não estiver definida.
         return true;
     }
     try {
@@ -50,7 +47,6 @@ const generateToken = (id) => {
 
 const controllers = {
     registerUser: async (req, res) => {
-        // --- INÍCIO DA VERIFICAÇÃO DO CAPTCHA ---
         const recaptchaToken = req.body['g-recaptcha-response'];
         if (!recaptchaToken) {
             return res.status(400).json({ message: 'Por favor, complete a verificação "Não sou um robô".' });
@@ -59,7 +55,6 @@ const controllers = {
         if (!isHuman) {
             return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Por favor, tente novamente.' });
         }
-        // --- FIM DA VERIFICAÇÃO ---
 
         const { username, email, password } = req.body;
         if (!username || !email || !password) {
@@ -96,12 +91,8 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        // --- INÍCIO DA VERIFICAÇÃO DO CAPTCHA ---
-        // Adapta o nome do token para ser compatível com o admin-login.html
         const recaptchaToken = req.body.recaptchaToken || req.body['g-recaptcha-response'];
         
-        // Apenas verifica se o pedido veio de um utilizador que se tenta logar como admin
-        // para não quebrar o login de utilizadores normais sem captcha (se for o caso).
         const potentialUser = await User.findOne({ email: req.body.email.toLowerCase() }).select('+role');
         if (potentialUser && potentialUser.role === 'admin') {
             if (!recaptchaToken) {
@@ -112,7 +103,6 @@ const controllers = {
                 return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
             }
         }
-        // --- FIM DA VERIFICAÇÃO ---
 
         const { email, password } = req.body;
         const user = await User.findOne({ email: email.toLowerCase() });
@@ -133,10 +123,6 @@ const controllers = {
             res.status(401).json({ message: 'Email ou senha inválidos.' });
         }
     },
-
-    // ... O resto das funções (forgotPassword, resetPassword, etc.) permanecem exatamente as mesmas
-    // da sua última versão, pois não são afetadas por esta alteração.
-    // O código abaixo é idêntico ao que você já tinha.
 
     forgotPassword: async (req, res) => {
         const { email } = req.body;
@@ -460,13 +446,31 @@ const controllers = {
         const settings = await getLiveSettings();
         const totalDeposited = await Transaction.aggregate([ { $match: { type: 'deposit', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
         const totalWithdrawn = await Transaction.aggregate([ { $match: { type: 'withdrawal', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
-        const totalCommission = await Game.aggregate([ { $match: { status: 'completed', betAmount: { $exists: true } } }, { $group: { _id: null, total: { $sum: { $multiply: ["$betAmount", settings.platformCommission] } } } } ]);
+        
+        const gamesStats = await Game.aggregate([
+            { $match: { status: 'completed', betAmount: { $exists: true } } },
+            { 
+                $group: { 
+                    _id: null,
+                    totalBetValue: { $sum: '$betAmount' }, 
+                    totalGames: { $sum: 1 } 
+                } 
+            }
+        ]);
+
+        const totalBetValue = gamesStats.length > 0 ? gamesStats[0].totalBetValue : 0;
+        const totalCompletedGames = gamesStats.length > 0 ? gamesStats[0].totalGames : 0;
+        
+        const totalCommission = totalBetValue * 2 * settings.platformCommission;
+        const totalTransactedInGames = totalBetValue * 2;
+
         res.json({
             totalDeposited: totalDeposited.length > 0 ? totalDeposited[0].total : 0,
             totalWithdrawn: totalWithdrawn.length > 0 ? totalWithdrawn[0].total : 0,
-            totalCommission: totalCommission.length > 0 ? totalCommission[0].total * 2 : 0,
+            totalCommission: totalCommission,
             totalUsers: await User.countDocuments(),
-            totalGames: await Game.countDocuments({ status: 'completed' }),
+            totalGames: totalCompletedGames,
+            totalTransactedInGames: totalTransactedInGames 
         });
     },
     
