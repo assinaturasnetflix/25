@@ -2,9 +2,10 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
-const { User, Transaction, Game, Setting } = require('./models'); // Importa o novo modelo Setting
-const defaultConfig = require('./config'); // Usado para valores padrão
+const { User, Transaction, Game, Setting } = require('./models');
+const defaultConfig = require('./config');
 const { sendPasswordResetEmail, generateNumericId } = require('./utils');
+const axios = require('axios'); // Importa a nova dependência
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -12,7 +13,26 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Helper para obter as configurações da base de dados ou criar se não existirem
+// --- NOVA FUNÇÃO HELPER PARA VERIFICAR O CAPTCHA ---
+async function verifyRecaptcha(token) {
+    const secretKey = process.env.RECAPTCHA_SECRET_KEY;
+    if (!secretKey) {
+        console.error("Aviso de Segurança: A chave secreta do reCAPTCHA (RECAPTCHA_SECRET_KEY) não está definida no ficheiro .env. A verificação será ignorada.");
+        // Em um ambiente de produção real, você poderia retornar 'false' aqui para forçar a configuração.
+        // Para flexibilidade, vamos retornar 'true' se a chave não estiver definida.
+        return true;
+    }
+    try {
+        const response = await axios.post(
+            `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`
+        );
+        return response.data.success;
+    } catch (error) {
+        console.error("Erro ao comunicar com a API do reCAPTCHA:", error.message);
+        return false;
+    }
+}
+
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
@@ -22,7 +42,6 @@ const getLiveSettings = async () => {
     return settings;
 };
 
-
 const generateToken = (id) => {
     return jwt.sign({ id }, process.env.JWT_SECRET, {
         expiresIn: '30d',
@@ -31,6 +50,17 @@ const generateToken = (id) => {
 
 const controllers = {
     registerUser: async (req, res) => {
+        // --- INÍCIO DA VERIFICAÇÃO DO CAPTCHA ---
+        const recaptchaToken = req.body['g-recaptcha-response'];
+        if (!recaptchaToken) {
+            return res.status(400).json({ message: 'Por favor, complete a verificação "Não sou um robô".' });
+        }
+        const isHuman = await verifyRecaptcha(recaptchaToken);
+        if (!isHuman) {
+            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Por favor, tente novamente.' });
+        }
+        // --- FIM DA VERIFICAÇÃO ---
+
         const { username, email, password } = req.body;
         if (!username || !email || !password) {
             return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
@@ -66,6 +96,17 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
+        // --- INÍCIO DA VERIFICAÇÃO DO CAPTCHA ---
+        const recaptchaToken = req.body['g-recaptcha-response'];
+        if (!recaptchaToken) {
+            return res.status(400).json({ message: 'Por favor, complete a verificação "Não sou um robô".' });
+        }
+        const isHuman = await verifyRecaptcha(recaptchaToken);
+        if (!isHuman) {
+            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Por favor, tente novamente.' });
+        }
+        // --- FIM DA VERIFICAÇÃO ---
+
         const { email, password } = req.body;
         const user = await User.findOne({ email: email.toLowerCase() });
 
@@ -102,7 +143,6 @@ const controllers = {
         await user.save({ validateBeforeSave: false });
 
         try {
-            // A função sendPasswordResetEmail precisa ser atualizada para aceitar os novos parâmetros
             await sendPasswordResetEmail(user.email, resetCode, settings.platformName, settings.passwordResetTokenExpiresIn);
             res.status(200).json({ message: 'Email com código de recuperação enviado.' });
         } catch (error) {
@@ -413,7 +453,7 @@ const controllers = {
         res.json({
             totalDeposited: totalDeposited.length > 0 ? totalDeposited[0].total : 0,
             totalWithdrawn: totalWithdrawn.length > 0 ? totalWithdrawn[0].total : 0,
-            totalCommission: totalCommission.length > 0 ? totalCommission[0].total * 2 : 0, // Multiplicado por 2 porque a aposta é de ambos
+            totalCommission: totalCommission.length > 0 ? totalCommission[0].total * 2 : 0,
             totalUsers: await User.countDocuments(),
             totalGames: await Game.countDocuments({ status: 'completed' }),
         });
