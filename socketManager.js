@@ -42,8 +42,6 @@ const socketManager = (io) => {
             if (!creator || creator.balance < betAmount) return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente.' });
             if (betAmount < settings.minBet) return io.to(socket.id).emit('error_message', { message: `A aposta mínima é ${settings.minBet} MT.` });
 
-            // --- CORREÇÃO APLICADA AQUI ---
-            // 1. Prepara os dados base do jogo.
             const gameData = {
                 players: [creatorId],
                 boardState: createInitialBoard(),
@@ -55,15 +53,12 @@ const socketManager = (io) => {
                 ready: []
             };
 
-            // 2. Adiciona o gameCode APENAS se o jogo for privado.
             if (isPrivate) {
                 gameData.gameCode = `P${Math.random().toString().substring(2, 8)}`;
             }
             
-            // 3. Cria o jogo com os dados corretos.
             const game = new Game(gameData);
             await game.save();
-            // --- FIM DA CORREÇÃO ---
             
             if (isPrivate) {
                 io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.gameCode });
@@ -90,8 +85,10 @@ const socketManager = (io) => {
                     data: lobbyData,
                     expiryTimer: expiryTimer
                 };
-
+                
                 io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+                
+                io.to(socket.id).emit('game_created_redirect', { gameId: game.id });
             }
         });
 
