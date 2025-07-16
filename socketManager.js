@@ -88,10 +88,13 @@ const socketManager = (io) => {
                 
                 io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
                 
-                io.to(socket.id).emit('game_created_redirect', { gameId: game.id });
+                // A LINHA DE REDIRECIONAMENTO FOI REMOVIDA DAQUI
             }
         });
 
+        // O resto do ficheiro (cancel_game, join_game, etc.) permanece exatamente igual.
+        // ... (código omitido para brevidade, mas está presente no ficheiro completo abaixo)
+        
         socket.on('cancel_game', async ({ gameId }) => {
             const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
             if (!userId) return;
