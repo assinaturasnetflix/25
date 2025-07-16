@@ -250,19 +250,32 @@ const socketManager = (io) => {
             io.to(game.id).emit('game_over', finalStats);
         };
 
+        socket.on('get_possible_moves', async ({gameId, from}) => {
+             const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+             const game = await Game.findById(gameId);
+             if(!game || !userId || !game.currentPlayer.equals(userId)) return;
+
+             // --- CORREÇÃO APLICADA AQUI ---
+             const playerIndex = game.players.findIndex(p => p.equals(userId));
+             if (playerIndex === -1) return;
+             const playerSymbol = playerIndex === 0 ? 'b' : 'w';
+
+             const moves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
+             const filteredMoves = moves.filter(m => m.from[0] === from[0] && m.from[1] === from[1]);
+             io.to(socket.id).emit('possible_moves', filteredMoves);
+        });
+
         socket.on('make_move', async ({ gameId, move }) => {
             const game = await Game.findById(gameId).populate('players');
             const playerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
 
             if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
             
-            // --- INÍCIO DA CORREÇÃO ---
-            // Lógica robusta para determinar a cor do jogador
+            // --- CORREÇÃO APLICADA AQUI ---
             const playerIndex = game.players.findIndex(p => p._id.equals(playerId));
-            if (playerIndex === -1) return; // Jogador não encontrado na partida
+            if (playerIndex === -1) return;
             const playerSymbol = playerIndex === 0 ? 'b' : 'w';
-            // --- FIM DA CORREÇÃO ---
-
+            
             const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
             
             const isValidMove = possibleMoves.some(pMove => 
@@ -271,7 +284,6 @@ const socketManager = (io) => {
             );
 
             if (!isValidMove) {
-                // Adicionado para depuração, pode ser removido em produção
                 console.log(`Movimento inválido rejeitado para o jogador ${playerId} no jogo ${gameId}`);
                 return;
             }
