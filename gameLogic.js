@@ -76,7 +76,7 @@ const findCaptureMovesForPawn = (board, r, c) => {
         const nnr = r + dr * 2;
         const nnc = c + dc * 2;
 
-        if (nnr >= 0 && nnr < 8 && nc >= 0 && nc < 8 && nnc >= 0 && nnc < 8) {
+        if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8) {
             if(board[nnr][nnc] === E) {
                 const jumpedPiece = board[nr][nc];
                 if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
@@ -152,7 +152,12 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
     
     let allCaptureSequences = [];
     for(const [r,c] of allPlayerPieces) {
-        const sequences = findCaptureSequencesFrom(board, r, c);
+        // --- CORREÇÃO APLICADA AQUI ---
+        // 1. Determina o tipo da peça (Dama ou não) ANTES de iniciar a busca.
+        const piece = board[r][c];
+        const isKing = piece.length > 1;
+        // 2. Passa o tipo da peça como um parâmetro fixo para a função recursiva.
+        const sequences = findCaptureSequencesFrom(board, r, c, isKing, { from: [r, c], to: null, captured: [] });
         allCaptureSequences.push(...sequences);
     }
 
@@ -173,21 +178,18 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
     return allSimpleMoves;
 };
 
-const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c], to: null, captured: [] }) => {
-    const piece = currentBoard[r][c];
-    if (!piece) return [];
+// --- CORREÇÃO APLICADA AQUI: A FUNÇÃO AGORA ACEITA O PARÂMETRO 'isKing' ---
+const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
     
-    const isKing = piece.length > 1;
+    // 3. A função não verifica mais o tipo da peça. Ela usa o valor que foi passado.
+    // Isto garante que uma peça normal continue a usar a lógica de captura de peça normal durante todo o turno.
     const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
     
-    // Se não há mais movimentos de captura a partir desta posição
     if (captureMoves.length === 0) {
-        // Se já capturamos pelo menos uma peça, esta é uma sequência válida.
         if (sequence.captured.length > 0) {
-            sequence.to = [r, c]; // Onde a peça parou
+            sequence.to = [r, c];
             return [sequence];
         }
-        // Se não capturamos nada e não há movimentos de captura, retorna vazio.
         return [];
     }
 
@@ -199,15 +201,15 @@ const findCaptureSequencesFrom = (currentBoard, r, c, sequence = { from: [r, c],
         const newSequence = {
             from: sequence.from,
             to: null,
-            captured: [...sequence.captured, ...move.captured]
+            captured: [...sequence.captured, ...move.captured],
         };
 
-        const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, newSequence);
+        // 4. A chamada recursiva passa o mesmo valor original de 'isKing' para a frente.
+        const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, isKing, newSequence);
         
         if (continuingPaths.length > 0) {
             allPossiblePaths.push(...continuingPaths);
         } else {
-            // Se não há mais capturas a partir da nova posição, esta sequência termina aqui.
             newSequence.to = [nextR, nextC];
             allPossiblePaths.push(newSequence);
         }
