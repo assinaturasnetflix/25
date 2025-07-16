@@ -256,7 +256,13 @@ const socketManager = (io) => {
 
             if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
             
-            const playerSymbol = game.players[0]._id.toString() === playerId ? 'b' : 'w';
+            // --- INÍCIO DA CORREÇÃO ---
+            // Lógica robusta para determinar a cor do jogador
+            const playerIndex = game.players.findIndex(p => p._id.equals(playerId));
+            if (playerIndex === -1) return; // Jogador não encontrado na partida
+            const playerSymbol = playerIndex === 0 ? 'b' : 'w';
+            // --- FIM DA CORREÇÃO ---
+
             const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
             
             const isValidMove = possibleMoves.some(pMove => 
@@ -264,7 +270,11 @@ const socketManager = (io) => {
                 JSON.stringify(pMove.to) === JSON.stringify(move.to)
             );
 
-            if (!isValidMove) return;
+            if (!isValidMove) {
+                // Adicionado para depuração, pode ser removido em produção
+                console.log(`Movimento inválido rejeitado para o jogador ${playerId} no jogo ${gameId}`);
+                return;
+            }
             
             const fullMove = possibleMoves.find(pMove => 
                 JSON.stringify(pMove.from) === JSON.stringify(move.from) &&
