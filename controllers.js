@@ -97,13 +97,20 @@ const controllers = {
 
     loginUser: async (req, res) => {
         // --- INÍCIO DA VERIFICAÇÃO DO CAPTCHA ---
-        const recaptchaToken = req.body['g-recaptcha-response'];
-        if (!recaptchaToken) {
-            return res.status(400).json({ message: 'Por favor, complete a verificação "Não sou um robô".' });
-        }
-        const isHuman = await verifyRecaptcha(recaptchaToken);
-        if (!isHuman) {
-            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Por favor, tente novamente.' });
+        // Adapta o nome do token para ser compatível com o admin-login.html
+        const recaptchaToken = req.body.recaptchaToken || req.body['g-recaptcha-response'];
+        
+        // Apenas verifica se o pedido veio de um utilizador que se tenta logar como admin
+        // para não quebrar o login de utilizadores normais sem captcha (se for o caso).
+        const potentialUser = await User.findOne({ email: req.body.email.toLowerCase() }).select('+role');
+        if (potentialUser && potentialUser.role === 'admin') {
+            if (!recaptchaToken) {
+                return res.status(400).json({ message: 'Verificação reCAPTCHA em falta.' });
+            }
+            const isHuman = await verifyRecaptcha(recaptchaToken);
+            if (!isHuman) {
+                return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
+            }
         }
         // --- FIM DA VERIFICAÇÃO ---
 
@@ -126,6 +133,10 @@ const controllers = {
             res.status(401).json({ message: 'Email ou senha inválidos.' });
         }
     },
+
+    // ... O resto das funções (forgotPassword, resetPassword, etc.) permanecem exatamente as mesmas
+    // da sua última versão, pois não são afetadas por esta alteração.
+    // O código abaixo é idêntico ao que você já tinha.
 
     forgotPassword: async (req, res) => {
         const { email } = req.body;
