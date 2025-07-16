@@ -10,28 +10,19 @@ const socketManager = require('./socketManager');
 const app = express();
 const server = http.createServer(app);
 
-// --- INÍCIO DA ATUALIZAÇÃO DE CORS DINÂMICO ---
-
 const corsOptions = {
-    // A função 'origin' lê dinamicamente a sua variável de ambiente
     origin: (origin, callback) => {
         const corsOrigin = process.env.CORS_ORIGIN;
 
-        // Se CORS_ORIGIN for '*', permite tudo.
         if (corsOrigin === '*') {
             return callback(null, true);
         }
         
-        // Se CORS_ORIGIN estiver definido, cria uma lista de permissões
-        // Ele suporta múltiplos domínios separados por vírgula. Ex: "url1.com,url2.com"
-        const whitelist = corsOrigin ? corsOrigin.split(',') : [];
+        const whitelist = corsOrigin ? corsOrigin.split(',').map(item => item.trim()) : [];
 
-        // Verifica se a origem do pedido está na lista de permissões
-        // ou se o pedido não tem origem (ex: Postman, apps mobile)
         if (!origin || whitelist.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
-            // Se a origem não estiver na lista, bloqueia o pedido.
             callback(new Error('Acesso não permitido pela política de CORS.'));
         }
     },
@@ -40,10 +31,8 @@ const corsOptions = {
     allowedHeaders: ["Content-Type", "Authorization"]
 };
 
-// --- FIM DA ATUALIZAÇÃO DE CORS DINÂMICO ---
-
 const io = new Server(server, {
-    cors: corsOptions, // Aplica as mesmas regras de CORS ao WebSocket
+    cors: corsOptions,
     connectionStateRecovery: {
         maxDisconnectionDuration: 2 * 60 * 1000,
         skipMiddlewares: true,
@@ -51,15 +40,32 @@ const io = new Server(server, {
 });
 
 // --- MIDDLEWARE ---
-app.use(cors(corsOptions)); // Usa as opções de CORS dinâmicas
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// --- INÍCIO DA ROTA DE PING (HEALTH CHECK) ---
+
+// Este endpoint responde aos pings dos serviços de monitorização (ex: cron-job.org).
+// Ele garante que o "Web Service" do Render não adormeça por inatividade.
+app.get("/", (req, res) => {
+  res.status(200).send("Servidor BrainSkill está online e operacional.");
+});
+
+// --- FIM DA ROTA DE PING ---
+
+
 // --- ROTAS DA API ---
+// Todas as rotas da sua aplicação continuarão a funcionar normalmente.
 app.use('/api', routes);
 
 // Conexão com o MongoDB
 const MONGO_URI = process.env.MONGO_URI;
+if (!MONGO_URI) {
+    console.error("Erro: A variável de ambiente MONGO_URI não está definida.");
+    process.exit(1);
+}
+
 mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB Conectado...'))
     .catch(err => console.error('Erro de conexão com MongoDB:', err));
@@ -70,5 +76,5 @@ socketManager(io);
 // Iniciar servidor
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Servidor de API rodando na porta ${PORT}`);
+    console.log(`Servidor de API da BrainSkill a rodar na porta ${PORT}`);
 });
