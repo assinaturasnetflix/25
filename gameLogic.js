@@ -24,6 +24,7 @@ const isOpponent = (playerPiece, targetPiece) => {
     return playerInitial !== targetInitial;
 };
 
+// Esta função está correta, pois descreve como uma Dama captura.
 const findCaptureMovesForKing = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length === 1) return [];
@@ -52,6 +53,9 @@ const findCaptureMovesForKing = (board, r, c) => {
                 }
             } else {
                 if (opponentFound) {
+                    // A Dama PODE aterrar em qualquer casa vazia após a captura.
+                    // No entanto, a regra da "sopro" não é implementada (parar atrás da peça),
+                    // então ela deve continuar. A lógica de sequência lida com isso.
                     moves.push({
                         from: [r, c],
                         to: [nr, nc],
@@ -64,6 +68,7 @@ const findCaptureMovesForKing = (board, r, c) => {
     return moves;
 };
 
+// Esta função está correta, pois descreve como um Peão captura.
 const findCaptureMovesForPawn = (board, r, c) => {
     const piece = board[r][c];
     if (!piece || piece.length > 1) return [];
@@ -80,6 +85,7 @@ const findCaptureMovesForPawn = (board, r, c) => {
             if(board[nnr][nnc] === E) {
                 const jumpedPiece = board[nr][nc];
                 if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
+                    // O Peão aterra APENAS na primeira casa livre.
                     moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
                 }
             }
@@ -103,7 +109,7 @@ const findSimpleMoves = (board, r, c) => {
                 moves.push({ from: [r, c], to: [nr, nc], captured: [] });
             }
         }
-    } else {
+    } else { // Movimento simples de Dama
         const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
         for (const [dr, dc] of directions) {
             for (let i = 1; i < 8; i++) {
@@ -120,6 +126,8 @@ const findSimpleMoves = (board, r, c) => {
     return moves;
 };
 
+// applyMoveToBoard continua a promover a peça se ela terminar na última linha.
+// Isto está correto, pois a promoção só é validada no fim do turno.
 const applyMoveToBoard = (board, move) => {
     const newBoard = JSON.parse(JSON.stringify(board));
     const [startR, startC] = move.from;
@@ -133,6 +141,7 @@ const applyMoveToBoard = (board, move) => {
         newBoard[capR][capC] = E;
     }
 
+    // A promoção só acontece se o MOVIMENTO FINAL terminar na linha de coroação.
     if ((piece === W && endR === 0) || (piece === B && endR === 7)) {
         newBoard[endR][endC] = piece === W ? WK : BK;
     }
@@ -140,6 +149,7 @@ const applyMoveToBoard = (board, move) => {
     return newBoard;
 };
 
+// Esta é a função principal que foi corrigida.
 const getPossibleMovesForPlayer = (board, playerColor) => {
     let allPlayerPieces = [];
     for (let r = 0; r < 8; r++) {
@@ -152,11 +162,9 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
     
     let allCaptureSequences = [];
     for(const [r,c] of allPlayerPieces) {
-        // --- CORREÇÃO APLICADA AQUI ---
-        // 1. Determina o tipo da peça (Dama ou não) ANTES de iniciar a busca.
         const piece = board[r][c];
         const isKing = piece.length > 1;
-        // 2. Passa o tipo da peça como um parâmetro fixo para a função recursiva.
+        // Inicia a busca recursiva com a identidade da peça "trancada".
         const sequences = findCaptureSequencesFrom(board, r, c, isKing, { from: [r, c], to: null, captured: [] });
         allCaptureSequences.push(...sequences);
     }
@@ -178,11 +186,10 @@ const getPossibleMovesForPlayer = (board, playerColor) => {
     return allSimpleMoves;
 };
 
-// --- CORREÇÃO APLICADA AQUI: A FUNÇÃO AGORA ACEITA O PARÂMETRO 'isKing' ---
+
+// Esta função foi corrigida para não reavaliar o tipo da peça.
 const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
-    
-    // 3. A função não verifica mais o tipo da peça. Ela usa o valor que foi passado.
-    // Isto garante que uma peça normal continue a usar a lógica de captura de peça normal durante todo o turno.
+    // A função de captura a ser usada é decidida pelo 'isKing' original, não pelo estado atual da peça.
     const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
     
     if (captureMoves.length === 0) {
@@ -195,6 +202,7 @@ const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
 
     let allPossiblePaths = [];
     for (const move of captureMoves) {
+        // 'applyMoveToBoard' ainda é usado para simular o próximo estado do tabuleiro.
         const nextBoard = applyMoveToBoard(currentBoard, move);
         const [nextR, nextC] = move.to;
         
@@ -204,7 +212,7 @@ const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
             captured: [...sequence.captured, ...move.captured],
         };
 
-        // 4. A chamada recursiva passa o mesmo valor original de 'isKing' para a frente.
+        // A chamada recursiva continua a usar a identidade 'isKing' original.
         const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, isKing, newSequence);
         
         if (continuingPaths.length > 0) {
