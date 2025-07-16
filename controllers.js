@@ -16,16 +16,14 @@ cloudinary.config({
 async function verifyRecaptcha(token) {
     const secretKey = process.env.RECAPTCHA_SECRET_KEY;
     if (!secretKey) {
-        console.error("Aviso de Segurança: A chave secreta do reCAPTCHA (RECAPTCHA_SECRET_KEY) não está definida no ficheiro .env. A verificação será ignorada.");
+        console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. Verificação ignorada.");
         return true;
     }
     try {
-        const response = await axios.post(
-            `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`
-        );
+        const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`);
         return response.data.success;
     } catch (error) {
-        console.error("Erro ao comunicar com a API do reCAPTCHA:", error.message);
+        console.error("Erro na verificação do reCAPTCHA:", error.message);
         return false;
     }
 }
@@ -33,35 +31,25 @@ async function verifyRecaptcha(token) {
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
-        console.log('Nenhuma configuração encontrada, criando a partir do padrão...');
         settings = await Setting.create({ singleton: 'main_settings', ...defaultConfig });
     }
     return settings;
 };
 
 const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, {
-        expiresIn: '30d',
-    });
+    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
 const controllers = {
     registerUser: async (req, res) => {
         const recaptchaToken = req.body['g-recaptcha-response'];
-        if (!recaptchaToken) {
-            return res.status(400).json({ message: 'Por favor, complete a verificação "Não sou um robô".' });
-        }
-        const isHuman = await verifyRecaptcha(recaptchaToken);
-        if (!isHuman) {
-            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Por favor, tente novamente.' });
+        if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
+            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
         }
 
         const { username, email, password } = req.body;
-        if (!username || !email || !password) {
-            return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
-        }
-        if (password.length < 6) {
-            return res.status(400).json({ message: 'A senha deve ter no mínimo 6 caracteres.' });
+        if (!username || !email || !password || password.length < 6) {
+            return res.status(400).json({ message: 'Dados inválidos. A senha deve ter no mínimo 6 caracteres.' });
         }
 
         const userExists = await User.findOne({ $or: [{ email: email.toLowerCase() }, { username }] });
@@ -71,12 +59,14 @@ const controllers = {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
+        const settings = await getLiveSettings();
 
         try {
             const user = await User.create({
                 username,
                 email: email.toLowerCase(),
                 password: hashedPassword,
+                bonusBalance: settings.isBonusEnabled ? settings.welcomeBonusAmount : 0,
             });
 
             res.status(201).json({
@@ -91,33 +81,30 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        const recaptchaToken = req.body.recaptchaToken || req.body['g-recaptcha-response'];
+        const { email, password, recaptchaToken } = req.body;
+        const potentialUser = await User.findOne({ email: email.toLowerCase() }).select('+role');
         
-        const potentialUser = await User.findOne({ email: req.body.email.toLowerCase() }).select('+role');
         if (potentialUser && potentialUser.role === 'admin') {
-            if (!recaptchaToken) {
-                return res.status(400).json({ message: 'Verificação reCAPTCHA em falta.' });
-            }
-            const isHuman = await verifyRecaptcha(recaptchaToken);
-            if (!isHuman) {
+            if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
                 return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
             }
         }
 
-        const { email, password } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
+        if (!potentialUser) {
+            return res.status(401).json({ message: 'Email ou senha inválidos.' });
+        }
 
-        if (user && (await bcrypt.compare(password, user.password))) {
-            if (user.isBlocked) {
+        if (await bcrypt.compare(password, potentialUser.password)) {
+            if (potentialUser.isBlocked) {
                 return res.status(403).json({ message: 'Esta conta encontra-se bloqueada.' });
             }
             res.json({
-                _id: user._id,
-                username: user.username,
-                email: user.email,
-                avatar: user.avatar,
-                role: user.role,
-                token: generateToken(user._id),
+                _id: potentialUser._id,
+                username: potentialUser.username,
+                email: potentialUser.email,
+                avatar: potentialUser.avatar,
+                role: potentialUser.role,
+                token: generateToken(potentialUser._id),
             });
         } else {
             res.status(401).json({ message: 'Email ou senha inválidos.' });
@@ -153,7 +140,6 @@ const controllers = {
 
     resetPassword: async (req, res) => {
         const { code, password } = req.body;
-        
         if (!code || !password || password.length < 6) {
              return res.status(400).json({ message: 'Por favor, forneça o código e uma nova senha com no mínimo 6 caracteres.' });
         }
@@ -177,7 +163,6 @@ const controllers = {
             await user.save();
 
             res.status(200).json({ message: 'Senha redefinida com sucesso.' });
-
         } catch (error) {
             console.error("Erro ao redefinir senha:", error);
             res.status(500).json({ message: "Ocorreu um erro no servidor." });
@@ -186,13 +171,12 @@ const controllers = {
 
     getPublicPaymentMethods: async (req, res) => {
         const settings = await getLiveSettings();
-        const publicMethods = settings.paymentMethods.map(m => ({
+        res.json(settings.paymentMethods.map(m => ({
             name: m.name,
             number: m.accountNumber,
             holder: m.accountName,
             instructions: m.instructions
-        }));
-        res.json(publicMethods);
+        })));
     },
 
     getMe: async (req, res) => {
@@ -211,7 +195,6 @@ const controllers = {
     updateProfile: async (req, res) => {
         const { bio } = req.body;
         const user = await User.findById(req.user.id);
-
         if (user) {
             user.bio = bio;
             const updatedUser = await user.save();
@@ -227,7 +210,6 @@ const controllers = {
             return res.status(400).json({ message: 'Dados inválidos fornecidos.'});
         }
         const user = await User.findById(req.user.id);
-        
         if (user && (await bcrypt.compare(oldPassword, user.password))) {
              const salt = await bcrypt.genSalt(10);
              user.password = await bcrypt.hash(newPassword, salt);
@@ -240,11 +222,9 @@ const controllers = {
 
     uploadAvatar: async (req, res) => {
         if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro enviado.' });
-
         try {
             const user = await User.findById(req.user.id);
             if (!user) return res.status(404).json({ message: 'Utilizador não encontrado' });
-            
             if (user.avatar && user.avatar.public_id !== 'default_avatar_id') {
                 await cloudinary.uploader.destroy(user.avatar.public_id);
             }
@@ -270,7 +250,6 @@ const controllers = {
     createDeposit: async (req, res) => {
         const { amount, method, proofText } = req.body;
         const settings = await getLiveSettings();
-        
         if (!amount || !method || (!proofText && !req.file)) {
             return res.status(400).json({ message: 'Dados insuficientes para o depósito.' });
         }
@@ -280,9 +259,7 @@ const controllers = {
         let proofData = proofText;
         if (req.file) {
             try {
-                 const result = await cloudinary.uploader.upload(req.file.path, {
-                    folder: 'brainskill_proofs',
-                 });
+                 const result = await cloudinary.uploader.upload(req.file.path, { folder: 'brainskill_proofs' });
                  proofData = result.secure_url;
             } catch(e) {
                 return res.status(500).json({ message: 'Erro ao carregar o comprovativo.'});
@@ -306,7 +283,6 @@ const controllers = {
         const { amount, method, holderName, phoneNumber } = req.body;
         const user = await User.findById(req.user.id);
         const settings = await getLiveSettings();
-        
         if (!amount || !method || !holderName || !phoneNumber) {
              return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
         }
@@ -314,7 +290,7 @@ const controllers = {
             return res.status(400).json({ message: `O levantamento mínimo é de ${settings.minWithdrawal} MT.` });
         }
         if (user.balance < Number(amount)) {
-            return res.status(400).json({ message: 'Saldo insuficiente.' });
+            return res.status(400).json({ message: 'Saldo real insuficiente para levantamento.' });
         }
         user.balance -= Number(amount);
         try {
@@ -341,10 +317,7 @@ const controllers = {
     },
     
     getMyGames: async (req, res) => {
-        const games = await Game.find({ 
-            players: req.user.id,
-            hiddenBy: { $ne: req.user.id }
-        })
+        const games = await Game.find({ players: req.user.id, hiddenBy: { $ne: req.user.id } })
         .populate('players', 'username avatar')
         .populate('winner', 'username')
         .sort({ createdAt: -1 });
@@ -358,8 +331,7 @@ const controllers = {
             if (!game.players.includes(req.user.id)) {
                 return res.status(403).json({ message: 'Você não tem permissão para alterar esta partida.' });
             }
-            const nonRemovableStatus = ['waiting', 'in_progress'];
-            if (nonRemovableStatus.includes(game.status)) {
+            if (['waiting', 'in_progress'].includes(game.status)) {
                 return res.status(400).json({ message: 'Não é possível remover uma partida em andamento.' });
             }
             if (!game.hiddenBy.includes(req.user.id)) {
@@ -371,8 +343,6 @@ const controllers = {
             res.status(500).json({ message: 'Erro no servidor ao tentar remover a partida.' });
         }
     },
-
-    // --- ADMIN CONTROLLERS ---
 
     getAllUsers: async (req, res) => {
         const users = await User.find({}).select('-password');
@@ -392,17 +362,21 @@ const controllers = {
     },
 
     manualBalanceUpdate: async (req, res) => {
-        const { amount } = req.body;
+        const { amount, balanceType = 'balance' } = req.body;
         const user = await User.findById(req.params.id);
-        if (user) {
-            const finalAmount = Number(amount);
-            if(isNaN(finalAmount)) return res.status(400).json({ message: 'Valor inválido.' });
-            user.balance += finalAmount;
-            await user.save();
-            res.json({ message: 'Saldo atualizado com sucesso.', newBalance: user.balance });
+        if (!user) return res.status(404).json({ message: 'Utilizador não encontrado.' });
+        
+        const finalAmount = Number(amount);
+        if(isNaN(finalAmount)) return res.status(400).json({ message: 'Valor inválido.' });
+
+        if (balanceType === 'bonus') {
+            user.bonusBalance += finalAmount;
         } else {
-            res.status(404).json({ message: 'Utilizador não encontrado.' });
+            user.balance += finalAmount;
         }
+
+        await user.save();
+        res.json({ message: 'Saldo atualizado com sucesso.', newBalance: user.balance, newBonusBalance: user.bonusBalance });
     },
 
     getAllTransactions: async (req, res) => {
@@ -418,24 +392,15 @@ const controllers = {
         }
         
         const user = await User.findById(transaction.userId);
-        if (!user) {
-            return res.status(404).json({ message: 'Utilizador da transação não encontrado.' });
-        }
+        if (!user) return res.status(404).json({ message: 'Utilizador da transação não encontrado.' });
 
-        if (status === 'approved') {
-            if (transaction.type === 'deposit') {
-                user.balance += transaction.amount;
-            }
-            transaction.status = 'approved';
-        } else if (status === 'rejected') {
-             if (transaction.type === 'withdrawal') {
-                user.balance += transaction.amount;
-             }
-            transaction.status = 'rejected';
-        } else {
-            return res.status(400).json({ message: 'Status inválido.' });
+        if (status === 'approved' && transaction.type === 'deposit') {
+            user.balance += transaction.amount;
+        } else if (status === 'rejected' && transaction.type === 'withdrawal') {
+            user.balance += transaction.amount;
         }
         
+        transaction.status = status;
         transaction.adminNotes = adminNotes;
         await user.save();
         await transaction.save();
@@ -443,61 +408,41 @@ const controllers = {
     },
     
     getDashboardStats: async (req, res) => {
-        const settings = await getLiveSettings();
-        const totalDeposited = await Transaction.aggregate([ { $match: { type: 'deposit', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
-        const totalWithdrawn = await Transaction.aggregate([ { $match: { type: 'withdrawal', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
+        const totalDepositedResult = await Transaction.aggregate([ { $match: { type: 'deposit', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
+        const totalWithdrawnResult = await Transaction.aggregate([ { $match: { type: 'withdrawal', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
+        const totalCommissionResult = await Game.aggregate([ { $match: { status: 'completed' } }, { $group: { _id: null, total: { $sum: '$commissionAmount' } } } ]);
         
-        const gamesStats = await Game.aggregate([
-            { $match: { status: 'completed', betAmount: { $exists: true } } },
-            { 
-                $group: { 
-                    _id: null,
-                    totalBetValue: { $sum: '$betAmount' }, 
-                    totalGames: { $sum: 1 } 
-                } 
-            }
-        ]);
-
-        const totalBetValue = gamesStats.length > 0 ? gamesStats[0].totalBetValue : 0;
-        const totalCompletedGames = gamesStats.length > 0 ? gamesStats[0].totalGames : 0;
-        
-        const totalCommission = totalBetValue * 2 * settings.platformCommission;
-        const totalTransactedInGames = totalBetValue * 2;
+        const totalDeposited = totalDepositedResult.length > 0 ? totalDepositedResult[0].total : 0;
+        const totalWithdrawn = totalWithdrawnResult.length > 0 ? totalWithdrawnResult[0].total : 0;
+        const lossRevenue = totalDeposited - totalWithdrawn;
 
         res.json({
-            totalDeposited: totalDeposited.length > 0 ? totalDeposited[0].total : 0,
-            totalWithdrawn: totalWithdrawn.length > 0 ? totalWithdrawn[0].total : 0,
-            totalCommission: totalCommission,
+            totalDeposited,
+            totalWithdrawn,
+            totalCommission: totalCommissionResult.length > 0 ? totalCommissionResult[0].total : 0,
+            lossRevenue,
             totalUsers: await User.countDocuments(),
-            totalGames: totalCompletedGames,
-            totalTransactedInGames: totalTransactedInGames 
+            totalGames: await Game.countDocuments({ status: 'completed' }),
         });
     },
     
     getPlatformSettings: async (req, res) => {
-        try {
-            const settings = await getLiveSettings();
-            res.json(settings);
-        } catch (error) {
-            res.status(500).json({ message: "Erro ao obter as configurações." });
-        }
+        const settings = await getLiveSettings();
+        res.json(settings);
     },
     
     updatePlatformSettings: async (req, res) => {
         try {
-            const { platformCommission, minDeposit, minBet } = req.body;
+            const { platformCommission, minDeposit, minBet, isBonusEnabled, welcomeBonusAmount } = req.body;
             const updateData = {};
 
             if (platformCommission !== undefined) updateData.platformCommission = platformCommission / 100;
             if (minDeposit !== undefined) updateData.minDeposit = minDeposit;
             if (minBet !== undefined) updateData.minBet = minBet;
+            if (isBonusEnabled !== undefined) updateData.isBonusEnabled = isBonusEnabled;
+            if (welcomeBonusAmount !== undefined) updateData.welcomeBonusAmount = welcomeBonusAmount;
 
-            await Setting.findOneAndUpdate(
-                { singleton: 'main_settings' },
-                { $set: updateData },
-                { new: true, upsert: true }
-            );
-
+            await Setting.findOneAndUpdate({ singleton: 'main_settings' }, { $set: updateData }, { new: true, upsert: true });
             res.status(200).json({ message: "Configurações gerais atualizadas com sucesso." });
         } catch (error) {
              res.status(500).json({ message: "Erro ao atualizar as configurações.", error: error.message });
@@ -505,20 +450,15 @@ const controllers = {
     },
     
     getPaymentMethodsAdmin: async (req, res) => {
-        try {
-            const settings = await getLiveSettings();
-            res.json(settings.paymentMethods);
-        } catch (error) {
-            res.status(500).json({ message: "Erro ao obter métodos de pagamento." });
-        }
+        const settings = await getLiveSettings();
+        res.json(settings.paymentMethods);
     },
     
     updatePaymentMethods: async (req, res) => {
         const { methods } = req.body;
         if (!Array.isArray(methods)) {
-            return res.status(400).json({ message: 'Formato inválido. "methods" deve ser um array.' });
+            return res.status(400).json({ message: 'Formato inválido.' });
         }
-        
         try {
             const updatedSettings = await Setting.findOneAndUpdate(
                 { singleton: 'main_settings' },
