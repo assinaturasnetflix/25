@@ -10,30 +10,25 @@ const socketManager = require('./socketManager');
 const app = express();
 const server = http.createServer(app);
 
-// --- INÍCIO DA ATUALIZAÇÃO DE CORS ESTRITO ---
+// --- INÍCIO DA ATUALIZAÇÃO DE CORS (EQUILÍBRIO FINAL) ---
 
 const corsOptions = {
-    // A função 'origin' lê dinamicamente a sua variável de ambiente
     origin: (origin, callback) => {
         const corsOrigin = process.env.CORS_ORIGIN;
 
-        // Se CORS_ORIGIN for '*', permite tudo (ideal para desenvolvimento inicial).
         if (corsOrigin === '*') {
             return callback(null, true);
         }
         
-        // Converte a string de domínios do .env numa lista (array).
-        // Suporta múltiplos domínios separados por vírgula.
         const whitelist = corsOrigin ? corsOrigin.split(',').map(item => item.trim()) : [];
 
-        // A condição '!origin' foi removida.
-        // Agora, o pedido SÓ É PERMITIDO se a sua 'origin' (enviada pelo navegador)
-        // estiver explicitamente na nossa lista de permissões.
-        if (whitelist.indexOf(origin) !== -1) {
-            callback(null, true); // Permite o pedido
+        // --- CORREÇÃO APLICADA AQUI ---
+        // Reintroduzimos a verificação '!origin'.
+        // Isto permite pedidos de servidor para servidor (como o cron-job) que não têm origem,
+        // mas continua a bloquear pedidos de navegadores de domínios não autorizados.
+        if (!origin || whitelist.indexOf(origin) !== -1) {
+            callback(null, true);
         } else {
-            // Se a 'origin' não estiver na lista ou se o pedido não tiver 'origin' (como de curl/Postman),
-            // o pedido é bloqueado com um erro.
             callback(new Error('Acesso não permitido pela política de CORS.'));
         }
     },
@@ -54,7 +49,7 @@ const io = new Server(server, {
 });
 
 // --- MIDDLEWARE ---
-app.use(cors(corsOptions)); // Usa as opções de CORS estritas
+app.use(cors(corsOptions)); // Usa as opções de CORS atualizadas
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
