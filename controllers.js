@@ -16,8 +16,8 @@ cloudinary.config({
 async function verifyRecaptcha(token) {
     const secretKey = process.env.RECAPTCHA_SECRET_KEY;
     if (!secretKey) {
-        console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. Verificação ignorada.");
-        return true;
+        console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. A verificação será ignorada em ambiente de desenvolvimento.");
+        return true; 
     }
     try {
         const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`);
@@ -81,30 +81,26 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        const { email, password, recaptchaToken } = req.body;
-        const potentialUser = await User.findOne({ email: email.toLowerCase() }).select('+role');
+        // --- CORREÇÃO APLICADA AQUI: VERIFICAÇÃO OBRIGATÓRIA PARA TODOS ---
+        const recaptchaToken = req.body['g-recaptcha-response'];
+        if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
+            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
+        }
         
-        if (potentialUser && potentialUser.role === 'admin') {
-            if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
-                return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
-            }
-        }
+        const { email, password } = req.body;
+        const user = await User.findOne({ email: email.toLowerCase() });
 
-        if (!potentialUser) {
-            return res.status(401).json({ message: 'Email ou senha inválidos.' });
-        }
-
-        if (await bcrypt.compare(password, potentialUser.password)) {
-            if (potentialUser.isBlocked) {
+        if (user && (await bcrypt.compare(password, user.password))) {
+            if (user.isBlocked) {
                 return res.status(403).json({ message: 'Esta conta encontra-se bloqueada.' });
             }
             res.json({
-                _id: potentialUser._id,
-                username: potentialUser.username,
-                email: potentialUser.email,
-                avatar: potentialUser.avatar,
-                role: potentialUser.role,
-                token: generateToken(potentialUser._id),
+                _id: user._id,
+                username: user.username,
+                email: user.email,
+                avatar: user.avatar,
+                role: user.role,
+                token: generateToken(user._id),
             });
         } else {
             res.status(401).json({ message: 'Email ou senha inválidos.' });
