@@ -1,3 +1,7 @@
+// ==========================================================
+// FICHEIRO: server.js (Versão Completa e Corrigida)
+// ==========================================================
+
 require('dotenv').config(); // Garante que as variáveis de .env são carregadas primeiro
 const express = require('express');
 const http = require('http');
@@ -19,15 +23,14 @@ if (!vapidPublicKey || !vapidPrivateKey) {
     console.warn("AVISO: Chaves VAPID não definidas no arquivo .env. As notificações push não funcionarão.");
 } else {
     webpush.setVapidDetails(
-        'mailto:acaciofariav@gmail.com', // Substitua pelo seu email de contato
+        'mailto:acaciofariav@gmail.com', // O seu email de contato
         vapidPublicKey,
         vapidPrivateKey
     );
     console.log("Configuração VAPID para notificações push carregada.");
 }
 
-// --- INÍCIO DA ATUALIZAÇÃO DE CORS (EQUILÍBRIO FINAL) ---
-
+// --- CONFIGURAÇÃO DE CORS ---
 const corsOptions = {
     origin: (origin, callback) => {
         const corsOrigin = process.env.CORS_ORIGIN;
@@ -49,9 +52,7 @@ const corsOptions = {
     allowedHeaders: ["Content-Type", "Authorization"]
 };
 
-// --- FIM DA ATUALIZAÇÃO ---
-
-
+// --- INICIALIZAÇÃO DO SOCKET.IO ---
 const io = new Server(server, {
     cors: corsOptions,
     connectionStateRecovery: {
@@ -72,9 +73,9 @@ app.get("/", (req, res) => {
 
 // --- ROTAS DA API ---
 app.use('/api', routes);
-console.log(">>> O arquivo de rotas foi carregado com sucesso. Versão: 1.0 <<<"); // <-- LINHA DE DEBUG ADICIONADA
+console.log(">>> O arquivo de rotas foi carregado com sucesso. <<<");
 
-// Conexão com o MongoDB
+// --- CONEXÃO COM O MONGODB ---
 const MONGO_URI = process.env.MONGO_URI;
 if (!MONGO_URI) {
     console.error("Erro: A variável de ambiente MONGO_URI não está definida.");
@@ -82,13 +83,39 @@ if (!MONGO_URI) {
 }
 
 mongoose.connect(MONGO_URI)
-    .then(() => console.log('MongoDB Conectado...'))
+    .then(async () => { // Tornamos o callback assíncrono
+        console.log('MongoDB Conectado...');
+
+        // --- INÍCIO DO CÓDIGO DE CORREÇÃO AUTOMÁTICA DO ÍNDICE ---
+        // Garante que o índice 'gameCode' está configurado corretamente como 'sparse'.
+        try {
+            const gameCollection = mongoose.connection.collection('games');
+            const indexes = await gameCollection.indexes();
+            const gameCodeIndex = indexes.find(idx => idx.name === 'gameCode_1');
+
+            // Se o índice existe mas NÃO é sparse, removemo-lo.
+            if (gameCodeIndex && !gameCodeIndex.sparse) {
+                console.log("Índice 'gameCode_1' antigo e incorreto encontrado. A remover...");
+                await gameCollection.dropIndex('gameCode_1');
+                console.log("Índice antigo removido. O Mongoose irá recriá-lo corretamente.");
+            } else if (gameCodeIndex) {
+                console.log("Índice 'gameCode_1' já está configurado corretamente.");
+            } else {
+                console.log("Índice 'gameCode_1' não encontrado. O Mongoose irá criá-lo.");
+            }
+        } catch (err) {
+            // Este erro pode acontecer se a coleção ainda não existir, o que é normal.
+            console.warn("Aviso ao verificar/corrigir o índice 'gameCode_1'.", err.message);
+        }
+        // --- FIM DO CÓDIGO DE CORREÇÃO ---
+
+    })
     .catch(err => console.error('Erro de conexão com MongoDB:', err));
 
-// Integração com Socket.IO
+// --- INTEGRAÇÃO COM SOCKET.IO ---
 socketManager(io);
 
-// Iniciar servidor
+// --- INICIAR SERVIDOR ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Servidor de API da BrainSkill a rodar na porta ${PORT}`);
