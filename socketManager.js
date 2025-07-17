@@ -1,6 +1,6 @@
-// =======================================================================
-// FICHEIRO: socketManager.js (VERSÃO FINAL COM CORREÇÃO findOne({gameId}))
-// =======================================================================
+// =========================================================================
+// FICHEIRO: socketManager.js (VERSÃO FINAL COM LÓGICA DE "PRONTO")
+// =========================================================================
 
 const { User, Game, Setting } = require('./models');
 const { getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition, createInitialBoard } = require('./gameLogic');
@@ -10,10 +10,10 @@ const { generateNumericId } = require('./utils');
 const disconnectionTimers = new Map();
 
 async function handleUserDisconnection(io, userId) {
+    // SÓ ABANDONA O JOGO SE ESTIVER 'in_progress'
     const timer = setTimeout(async () => {
         try {
-            console.log(`[Abandono] Período de tolerância de 15s terminou para ${userId}. Verificando jogos ativos...`);
-            const activeGame = await Game.findOne({ status: 'in_progress', players: userId });
+            const activeGame = await Game.findOne({ players: userId, status: 'in_progress' });
             if (activeGame) {
                 const winnerId = activeGame.players.find(p => p.toString() !== userId).toString();
                 console.log(`[Abandono] Jogo ${activeGame.gameId} abandonado por ${userId}. Vencedor: ${winnerId}`);
@@ -21,9 +21,9 @@ async function handleUserDisconnection(io, userId) {
             }
             disconnectionTimers.delete(userId);
         } catch (error) {
-            console.error(`[Erro Abandono] Erro ao processar abandono para ${userId}:`, error);
+            console.error(`[Erro Abandono] Falha ao processar abandono para ${userId}:`, error);
         }
-    }, 15000);
+    }, 15000); // 15 segundos de tolerância
 
     disconnectionTimers.set(userId, timer);
     console.log(`[Timer Desconexão] Timer de 15s iniciado para utilizador ${userId}.`);
@@ -37,10 +37,8 @@ async function endGame(io, gameId, result) {
         if (!game || ['completed', 'abandoned'].includes(game.status)) {
             await session.abortTransaction(); session.endSession(); return;
         }
-
         const { winnerId, loserId, reason, isDraw } = result;
         game.status = reason === 'abandonment' ? 'abandoned' : 'completed';
-        
         if (!isDraw) {
             const winner = await User.findById(winnerId).session(session);
             const loser = await User.findById(loserId).session(session);
@@ -64,10 +62,8 @@ async function endGame(io, gameId, result) {
              }
              game.winner = null;
         }
-        
         await game.save({ session });
         await session.commitTransaction();
-
         const finalGame = await Game.findOne({ gameId: gameId }).populate('winner', 'username avatar').populate('players', 'username avatar');
         io.to(game.gameId).emit('game_over', { game: finalGame, reason });
     } catch (error) {
@@ -118,8 +114,6 @@ module.exports = function(io) {
 
         socket.on('subscribe_to_game', async ({ gameId }) => {
             try {
-                // *** CORREÇÃO APLICADA AQUI ***
-                // Trocado Game.findById(gameId) por Game.findOne({ gameId: gameId })
                 const game = await Game.findOne({ gameId: gameId });
                 if (game && game.players.map(p => p.toString()).includes(userId)) {
                     socket.join(gameId);
@@ -134,10 +128,34 @@ module.exports = function(io) {
             }
         });
 
+        socket.on('player_ready', async ({ gameId }) => {
+            try {
+                const game = await Game.findOne({ gameId });
+                // Garante que o jogador pertence ao jogo e o jogo ainda está à espera
+                if (!game || !game.players.map(p => p.toString()).includes(userId) || game.status !== 'waiting') return;
+                
+                // Adiciona o jogador à lista de prontos se ainda não estiver lá
+                if (!game.ready.includes(userId)) {
+                    game.ready.push(userId);
+                }
+                
+                // Se ambos os jogadores estiverem na sala e ambos estiverem prontos, inicia o jogo
+                if (game.players.length === 2 && game.ready.length === 2) {
+                    game.status = 'in_progress';
+                    console.log(`[Início Confirmado] Jogo ${game.gameId} iniciado após ambos os jogadores confirmarem.`);
+                }
+    
+                await game.save();
+                await emitGameStateUpdate(io, gameId);
+            } catch (error) {
+                console.error(`[ERRO] Falha em player_ready para gameId ${gameId}:`, error);
+                socket.emit('error_message', { message: 'Erro ao confirmar prontidão.' });
+            }
+        });
+        
         socket.on('get_lobby', () => emitLobbyUpdate(io));
 
         socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
-            // Este código já estava correto.
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
@@ -171,10 +189,10 @@ module.exports = function(io) {
         });
 
         socket.on('join_game', async ({ gameCodeOrId }) => {
-            // Este código já estava correto.
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
+                // NÃO muda o status para 'in_progress' aqui. Só adiciona o jogador.
                 const game = await Game.findOne({ $or: [{ gameId: gameCodeOrId }, { gameCode: gameCodeOrId.toUpperCase() }], status: 'waiting' }).session(session);
                 if (!game) throw new Error('Partida não encontrada, expirada ou já iniciada.');
                 if (game.players.includes(userId)) throw new Error('Não pode entrar na sua própria partida.');
@@ -183,15 +201,14 @@ module.exports = function(io) {
                 if (joiner[balanceField] < game.betAmount) throw new Error('Saldo insuficiente para entrar nesta partida.');
                 joiner[balanceField] -= game.betAmount;
                 game.players.push(joiner._id);
-                game.status = 'in_progress';
-                game.currentPlayer = game.players[0];
+                game.currentPlayer = game.players[0]; // Define o primeiro jogador
                 await joiner.save({ session });
                 await game.save({ session });
                 await session.commitTransaction();
                 const populatedGame = await Game.findById(game._id);
                 const creatorId = populatedGame.players[0]._id.toString();
                 const joinerId = populatedGame.players[1]._id.toString();
-                console.log(`[Início de Jogo] Jogo ${game.gameId} iniciado. Notificando criador ${creatorId} e oponente ${joinerId}.`);
+                console.log(`[Join] Jogador ${joinerId} entrou no jogo ${game.gameId}. Notificando ambos para irem para a sala de espera.`);
                 io.to(creatorId).emit('game_start', populatedGame);
                 io.to(joinerId).emit('game_start', populatedGame);
                 emitLobbyUpdate(io);
@@ -205,7 +222,6 @@ module.exports = function(io) {
 
         socket.on('make_move', async ({ gameId, move }) => {
             try {
-                // *** CORREÇÃO APLICADA AQUI ***
                 const game = await Game.findOne({ gameId: gameId });
                 if (!game || game.status !== 'in_progress' || !game.currentPlayer.equals(userId)) return;
                 const playerColor = game.players[0]._id.equals(userId) ? 'w' : 'b';
@@ -228,7 +244,6 @@ module.exports = function(io) {
 
         socket.on('surrender', async ({ gameId }) => {
             try {
-                // *** CORREÇÃO APLICADA AQUI ***
                 const game = await Game.findOne({ gameId: gameId, status: 'in_progress', players: userId });
                 if (!game) return;
                 const winnerId = game.players.find(p => !p.equals(userId));

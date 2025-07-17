@@ -1,5 +1,5 @@
 // ==========================================================
-// FICHEIRO: models.js (VERSÃO FINAL E CORRIGIDA)
+// FICHEIRO: models.js (VERSÃO FINAL COM O CAMPO "READY")
 // ==========================================================
 
 const mongoose = require('mongoose');
@@ -82,21 +82,19 @@ const gameSchema = new mongoose.Schema({
     betAmount: { type: Number, required: true },
     commissionAmount: { type: Number, default: 0 },
     isPrivate: { type: Boolean, default: false },
-    
-    // ===========================================================
-    // *** LINHA CRÍTICA DA CORREÇÃO PARA O ERRO "DUPLICATE KEY" ***
-    // ===========================================================
     gameCode: { type: String, unique: true, sparse: true },
-    // ===========================================================
-    
     lobbyDescription: { type: String, maxlength: 100 },
     moveHistory: [{
         player: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        from: [Number], // Simplificado para array de números
-        to: [Number],   // Simplificado para array de números
-        captured: [[Number]], // Array de arrays de números
+        from: [Number],
+        to: [Number],
+        captured: [[Number]],
         timestamp: { type: Date, default: Date.now }
     }],
+    
+    // *** CAMPO ADICIONADO PARA A LÓGICA DE "PRONTO" ***
+    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+
     hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
