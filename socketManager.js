@@ -1,6 +1,6 @@
-// =================================================================
-// FICHEIRO: socketManager.js (VERSÃO FINAL COM CORREÇÃO DE SALAS)
-// =================================================================
+// =======================================================================
+// FICHEIRO: socketManager.js (VERSÃO FINAL COM CORREÇÃO findOne({gameId}))
+// =======================================================================
 
 const { User, Game, Setting } = require('./models');
 const { getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition, createInitialBoard } = require('./gameLogic');
@@ -17,13 +17,13 @@ async function handleUserDisconnection(io, userId) {
             if (activeGame) {
                 const winnerId = activeGame.players.find(p => p.toString() !== userId).toString();
                 console.log(`[Abandono] Jogo ${activeGame.gameId} abandonado por ${userId}. Vencedor: ${winnerId}`);
-                await endGame(io, activeGame._id, { winnerId, loserId: userId, reason: 'abandonment' });
+                await endGame(io, activeGame.gameId, { winnerId, loserId: userId, reason: 'abandonment' });
             }
             disconnectionTimers.delete(userId);
         } catch (error) {
             console.error(`[Erro Abandono] Erro ao processar abandono para ${userId}:`, error);
         }
-    }, 15000); // 15 segundos de tolerância
+    }, 15000);
 
     disconnectionTimers.set(userId, timer);
     console.log(`[Timer Desconexão] Timer de 15s iniciado para utilizador ${userId}.`);
@@ -33,7 +33,7 @@ async function endGame(io, gameId, result) {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-        const game = await Game.findById(gameId).session(session);
+        const game = await Game.findOne({ gameId: gameId }).session(session);
         if (!game || ['completed', 'abandoned'].includes(game.status)) {
             await session.abortTransaction(); session.endSession(); return;
         }
@@ -46,18 +46,14 @@ async function endGame(io, gameId, result) {
             const loser = await User.findById(loserId).session(session);
             if (winner && loser) {
                 game.winner = winner._id;
-                winner.stats.wins += 1;
-                loser.stats.losses += 1;
+                winner.stats.wins += 1; loser.stats.losses += 1;
                 const settings = await Setting.findOne({ singleton: 'main_settings' }).session(session);
-                const commissionRate = settings.platformCommission || 0.15;
                 const totalPot = game.betAmount * 2;
-                const commissionAmount = totalPot * commissionRate;
-                const winnerPrize = totalPot - commissionAmount;
-                game.commissionAmount = commissionAmount;
+                game.commissionAmount = totalPot * (settings.platformCommission || 0.15);
+                const winnerPrize = totalPot - game.commissionAmount;
                 if (game.bettingMode === 'real') winner.balance += winnerPrize;
                 else winner.bonusBalance += winnerPrize;
-                await winner.save({ session });
-                await loser.save({ session });
+                await winner.save({ session }); await loser.save({ session });
             }
         } else {
              const [p1, p2] = await Promise.all([User.findById(game.players[0]).session(session), User.findById(game.players[1]).session(session)]);
@@ -72,7 +68,7 @@ async function endGame(io, gameId, result) {
         await game.save({ session });
         await session.commitTransaction();
 
-        const finalGame = await Game.findById(game._id).populate('winner', 'username avatar').populate('players', 'username avatar');
+        const finalGame = await Game.findOne({ gameId: gameId }).populate('winner', 'username avatar').populate('players', 'username avatar');
         io.to(game.gameId).emit('game_over', { game: finalGame, reason });
     } catch (error) {
         await session.abortTransaction();
@@ -88,13 +84,11 @@ const emitLobbyUpdate = async (io) => {
         const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
         const games = await Game.find({ status: 'waiting', isPrivate: false, createdAt: { $gte: twoMinutesAgo } }).populate('creator', 'username avatar').sort({ createdAt: -1 });
         io.to('lobby').emit('lobby_update', games);
-    } catch (error) {
-        console.error("[Erro Lobby]", error);
-    }
+    } catch (error) { console.error("[Erro Lobby]", error); }
 };
 
 async function emitGameStateUpdate(io, gameId) {
-    const game = await Game.findById(gameId).populate('players', 'username avatar');
+    const game = await Game.findOne({ gameId: gameId }).populate('players', 'username avatar');
     if (!game) return;
     for (const player of game.players) {
         const playerColor = game.players[0]._id.equals(player._id) ? 'w' : 'b';
@@ -124,7 +118,9 @@ module.exports = function(io) {
 
         socket.on('subscribe_to_game', async ({ gameId }) => {
             try {
-                const game = await Game.findById(gameId);
+                // *** CORREÇÃO APLICADA AQUI ***
+                // Trocado Game.findById(gameId) por Game.findOne({ gameId: gameId })
+                const game = await Game.findOne({ gameId: gameId });
                 if (game && game.players.map(p => p.toString()).includes(userId)) {
                     socket.join(gameId);
                     console.log(`[Jogo] Socket ${socket.id} (user: ${userId}) subscreveu ao jogo ${gameId}`);
@@ -133,6 +129,7 @@ module.exports = function(io) {
                     socket.emit('error_message', { message: 'Jogo não encontrado ou você não é um jogador.' });
                 }
             } catch (error) {
+                console.error(`[ERRO] Falha em subscribe_to_game para gameId ${gameId}:`, error);
                 socket.emit('error_message', { message: 'Erro ao entrar na sala do jogo.' });
             }
         });
@@ -140,6 +137,7 @@ module.exports = function(io) {
         socket.on('get_lobby', () => emitLobbyUpdate(io));
 
         socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
+            // Este código já estava correto.
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
@@ -173,6 +171,7 @@ module.exports = function(io) {
         });
 
         socket.on('join_game', async ({ gameCodeOrId }) => {
+            // Este código já estava correto.
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
@@ -206,7 +205,8 @@ module.exports = function(io) {
 
         socket.on('make_move', async ({ gameId, move }) => {
             try {
-                const game = await Game.findById(gameId);
+                // *** CORREÇÃO APLICADA AQUI ***
+                const game = await Game.findOne({ gameId: gameId });
                 if (!game || game.status !== 'in_progress' || !game.currentPlayer.equals(userId)) return;
                 const playerColor = game.players[0]._id.equals(userId) ? 'w' : 'b';
                 const validMoves = getPossibleMovesForPlayer(game.boardState, playerColor);
@@ -217,26 +217,23 @@ module.exports = function(io) {
                 const winCondition = checkWinCondition(game.boardState, playerColor);
                 if (winCondition.winner) {
                     const loserId = game.players.find(p => !p.equals(userId));
-                    await endGame(io, game._id, { winnerId: userId, loserId, reason: 'checkmate' });
+                    await endGame(io, game.gameId, { winnerId: userId, loserId, reason: 'checkmate' });
                     return;
                 }
                 game.currentPlayer = game.players.find(p => !p.equals(userId));
                 await game.save();
                 await emitGameStateUpdate(io, gameId);
-            } catch(error) {
-                console.error("Erro em 'make_move':", error);
-            }
+            } catch(error) { console.error("Erro em 'make_move':", error); }
         });
 
         socket.on('surrender', async ({ gameId }) => {
             try {
-                const game = await Game.findOne({ _id: gameId, status: 'in_progress', players: userId });
+                // *** CORREÇÃO APLICADA AQUI ***
+                const game = await Game.findOne({ gameId: gameId, status: 'in_progress', players: userId });
                 if (!game) return;
                 const winnerId = game.players.find(p => !p.equals(userId));
-                await endGame(io, game._id, { winnerId, loserId: userId, reason: 'resignation' });
-            } catch (error) {
-                console.error("Erro em 'surrender':", error);
-            }
+                await endGame(io, game.gameId, { winnerId, loserId: userId, reason: 'resignation' });
+            } catch (error) { console.error("Erro em 'surrender':", error); }
         });
         
         socket.on('disconnect', () => {
