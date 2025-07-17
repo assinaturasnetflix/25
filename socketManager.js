@@ -1,5 +1,5 @@
 // ==========================================================
-// FICHEIRO: socketManager.js (Versão Completa com Correções)
+// FICHEIRO: socketManager.js (Versão com Correção Lógica Final)
 // ==========================================================
 
 const { User, Game, Setting, Transaction } = require('./models');
@@ -10,19 +10,15 @@ const mongoose = require('mongoose');
 const connectedUsers = new Map();
 
 /**
- * Função central para finalizar uma partida, agora com lógica de repetição para erros de transação.
- * @param {object} io - Instância do Socket.IO.
- * @param {string} gameId - O ID do jogo a ser finalizado.
- * @param {object} result - Objeto com o resultado. Ex: { winnerId, loserId, reason, isDraw }.
+ * Função central para finalizar uma partida, com lógica de repetição para erros de transação.
  */
 async function endGame(io, gameId, result) {
-    const maxRetries = 3; // Tentar no máximo 3 vezes
+    const maxRetries = 3;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         const session = await mongoose.startSession();
         session.startTransaction();
         try {
             const game = await Game.findById(gameId).session(session);
-            // Se o jogo já foi finalizado numa tentativa anterior, paramos.
             if (!game || game.status === 'completed' || game.status === 'abandoned') {
                 await session.abortTransaction();
                 session.endSession();
@@ -34,7 +30,6 @@ async function endGame(io, gameId, result) {
             let winner, loser;
 
             if (isDraw) {
-                // Lógica para empate: devolver o dinheiro (sem comissão)
                 const player1 = await User.findById(game.players[0]).session(session);
                 const player2 = await User.findById(game.players[1]).session(session);
                 if (game.bettingMode === 'real') {
@@ -48,7 +43,6 @@ async function endGame(io, gameId, result) {
                 await player2.save({ session });
                 game.winner = null;
             } else {
-                // Lógica para vitória/derrota
                 winner = await User.findById(winnerId).session(session);
                 loser = await User.findById(loserId).session(session);
                 if (!winner || !loser) throw new Error('Jogador vencedor ou perdedor não encontrado.');
@@ -78,33 +72,29 @@ async function endGame(io, gameId, result) {
             await game.save({ session });
             await session.commitTransaction();
 
-            // Se chegamos aqui, a transação foi bem-sucedida, podemos sair do loop.
             const finalGame = await Game.findById(game._id).populate('winner', 'username');
             io.to(game.gameId).emit('game_over', { game: finalGame, reason });
             
             session.endSession();
-            return; // Sai da função com sucesso
+            return;
 
         } catch (error) {
             await session.abortTransaction();
             
-            // Verifica se é um erro que permite repetição (TransientTransactionError)
             if (error.errorLabelSet && error.errorLabelSet.has('TransientTransactionError') && attempt < maxRetries) {
                 console.log(`Tentativa ${attempt} falhou devido a um conflito de transação. A tentar novamente...`);
-                await new Promise(res => setTimeout(res, 100 * attempt)); // Espera um pouco antes de tentar de novo
+                await new Promise(res => setTimeout(res, 100 * attempt));
                 session.endSession();
-                continue; // Próxima iteração do loop
+                continue;
             } else {
-                // Se não for um erro de repetição ou se esgotaram as tentativas, regista o erro e para.
                 console.error(`Erro CRÍTICO ao finalizar o jogo após ${attempt} tentativas:`, error);
                 io.to(gameId).emit('error_message', { message: 'Erro crítico ao finalizar a partida. Contacte o suporte.' });
                 session.endSession();
-                return; // Sai da função com erro
+                return;
             }
         }
     }
 }
-
 
 /**
  * Emite a lista de jogos públicos disponíveis no lobby.
@@ -133,7 +123,7 @@ module.exports = function(io) {
         if (userId) {
             console.log(`Utilizador ${userId} conectado com socket ${socket.id}`);
             connectedUsers.set(socket.id, userId);
-            socket.join(userId); // Sala privada para notificações diretas
+            socket.join(userId);
         }
         
         socket.join('lobby');
@@ -142,7 +132,9 @@ module.exports = function(io) {
 
         socket.on('get_lobby', () => emitLobbyUpdate(io));
 
+        // --- FUNÇÃO CORRIGIDA ---
         socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
+            let amountToReturn = 0; // Guarda o valor para devolver em caso de erro
             try {
                 const user = await User.findById(userId);
                 if (!user) return socket.emit('error_message', { message: 'Utilizador inválido.' });
@@ -157,9 +149,11 @@ module.exports = function(io) {
                     return socket.emit('error_message', { message: 'Saldo insuficiente na carteira ativa.' });
                 }
                 
+                amountToReturn = betAmount; // Prepara o valor para possível devolução
                 user[balanceField] -= betAmount;
                 
-                const game = new Game({
+                // Cria o objeto base do jogo
+                const gameData = {
                     players: [user._id],
                     creator: user._id,
                     betAmount,
@@ -168,21 +162,42 @@ module.exports = function(io) {
                     currentPlayer: user._id,
                     isPrivate,
                     lobbyDescription: isPrivate ? '' : description,
-                    gameCode: isPrivate ? `P${generateNumericId(5)}` : null,
-                });
+                };
 
+                // Adiciona o 'gameCode' APENAS SE o jogo for privado.
+                if (isPrivate) {
+                    gameData.gameCode = `P${generateNumericId(5)}`;
+                }
+
+                const game = new Game(gameData);
+                
                 await user.save();
-                await game.save();
+                await game.save(); // Esta chamada agora é segura
 
                 if (isPrivate) {
                     socket.emit('private_game_created_show_code', { privateCode: game.gameCode });
                 }
                 emitLobbyUpdate(io);
+
             } catch (error) {
                 console.error("Erro em 'create_game':", error);
-                socket.emit('error_message', { message: 'Erro ao criar a partida.' });
+                
+                // Lógica de segurança para devolver o saldo ao utilizador em caso de erro
+                if (amountToReturn > 0) {
+                    const user = await User.findById(userId);
+                    if (user) {
+                        const balanceField = user.activeBettingMode === 'bonus' ? 'bonusBalance' : 'balance';
+                        user[balanceField] += amountToReturn;
+                        await user.save();
+                        console.log(`Saldo de ${amountToReturn} MT devolvido a ${userId} após falha na criação do jogo.`);
+                        socket.emit('error_message', { message: 'Erro ao criar a partida. O seu saldo foi restaurado.' });
+                        return;
+                    }
+                }
+                socket.emit('error_message', { message: 'Ocorreu um erro fatal ao criar a partida.' });
             }
         });
+
 
         socket.on('cancel_game', async ({ gameId }) => {
             try {
