@@ -19,7 +19,7 @@ if (!vapidPublicKey || !vapidPrivateKey) {
     console.warn("AVISO: Chaves VAPID não definidas no arquivo .env. As notificações push não funcionarão.");
 } else {
     webpush.setVapidDetails(
-        'mailto:seu-email-de-contato@exemplo.com', // Substitua pelo seu email de contato
+        'mailto:acaciofariav@gmail.com', // Substitua pelo seu email de contato
         vapidPublicKey,
         vapidPrivateKey
     );
