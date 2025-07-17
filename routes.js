@@ -57,19 +57,19 @@ const admin = (req, res, next) => {
     }
 };
 
-// Rotas Públicas (não precisam de token)
+// Rotas Públicas
 router.post('/users/register', controllers.registerUser);
 router.post('/users/login', controllers.loginUser);
 router.post('/users/forgot-password', controllers.forgotPassword);
 router.post('/users/reset-password', controllers.resetPassword);
 router.get('/users/profile/:id', controllers.getPublicProfile);
 
-// Rotas Protegidas (precisam de token de utilizador)
+// Rotas Protegidas
 router.get('/users/me', protect, controllers.getMe);
 router.put('/users/profile', protect, controllers.updateProfile);
 router.put('/users/password', protect, controllers.updatePassword);
 router.post('/users/avatar', protect, upload.single('avatar'), controllers.uploadAvatar);
-router.post('/users/subscribe', protect, controllers.subscribePushNotifications); // <-- ROTA ADICIONADA
+router.post('/users/subscribe', protect, controllers.subscribePushNotifications);
 router.get('/ranking', protect, controllers.getRanking);
 router.get('/payment-methods', protect, controllers.getPublicPaymentMethods);
 router.post('/transactions/deposit', protect, upload.single('proof'), controllers.createDeposit);
@@ -78,7 +78,7 @@ router.get('/transactions/me', protect, controllers.getMyTransactions);
 router.get('/games/me', protect, controllers.getMyGames);
 router.delete('/games/me/:id', protect, controllers.hideGameFromHistory);
 
-// Rotas de Administrador (precisam de token de admin)
+// Rotas de Admin
 router.get('/admin/users', protect, admin, controllers.getAllUsers);
 router.put('/admin/users/:id/toggle-block', protect, admin, controllers.toggleBlockUser);
 router.put('/admin/users/:id/balance', protect, admin, controllers.manualBalanceUpdate);

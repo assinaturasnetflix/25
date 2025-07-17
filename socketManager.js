@@ -1,279 +1,275 @@
-const { Game, User, Setting } = require('./models');
-const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition } = require('./gameLogic');
-const mongoose = require('mongoose');
-const webpush = require('web-push');
+const B = 'b'; 
+const W = 'w'; 
+const BK = 'bk'; 
+const WK = 'wk';
+const E = null;
 
-let activeUsers = {};
-let activeLobbies = {};
-const gameTimers = {}; // Objeto para armazenar os timers de cada jogo
-
-const getLiveSettings = async () => {
-    let settings = await Setting.findOne({ singleton: 'main_settings' });
-    if (!settings) {
-        settings = await Setting.create({ singleton: 'main_settings' });
-    }
-    return settings;
+const createInitialBoard = () => {
+    return [
+        [E, B, E, B, E, B, E, B],
+        [B, E, B, E, B, E, B, E],
+        [E, B, E, B, E, B, E, B],
+        [E, E, E, E, E, E, E, E],
+        [E, E, E, E, E, E, E, E],
+        [W, E, W, E, W, E, W, E],
+        [E, W, E, W, E, W, E, W],
+        [W, E, W, E, W, E, W, E]
+    ];
 };
 
-const sendGameReadyNotification = async (creatorId, opponentUsername, gameId) => {
-    try {
-        const creator = await User.findById(creatorId);
-        if (creator && creator.pushSubscription) {
-            const payload = JSON.stringify({
-                title: 'O seu oponente chegou!',
-                body: `${opponentUsername} entrou na sua partida. O jogo vai começar!`,
-                icon: '/icons/icon-192x192.png',
-                data: { url: `/game.html?id=${gameId}` }
-            });
-            await webpush.sendNotification(creator.pushSubscription, payload);
-            console.log(`Notificação de "jogo pronto" enviada para ${creator.username}`);
-        }
-    } catch (error) {
-        console.error("Erro ao enviar notificação push:", error.message);
-        if (error.statusCode === 410) {
-            await User.updateOne({ _id: creatorId }, { $unset: { pushSubscription: "" } });
-        }
-    }
+const isOpponent = (playerPiece, targetPiece) => {
+    if (!playerPiece || !targetPiece) return false;
+    const playerInitial = playerPiece.charAt(0);
+    const targetInitial = targetPiece.charAt(0);
+    return playerInitial !== targetInitial;
 };
 
-const socketManager = (io) => {
+const findCaptureMovesForKing = (board, r, c) => {
+    const piece = board[r][c];
+    if (!piece || piece.length === 1) return [];
+    const moves = [];
+    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
 
-    const clearGameTimers = (gameId) => {
-        if (gameTimers[gameId]) {
-            clearTimeout(gameTimers[gameId].inactivityTimeout);
-            clearInterval(gameTimers[gameId].visualTimer);
-            clearTimeout(gameTimers[gameId].disconnectTimeout);
-            delete gameTimers[gameId];
-        }
-    };
+    for (const [dr, dc] of directions) {
+        let opponentFound = null;
+        let opponentPos = null;
 
-    const handleGameOver = async (game, winnerId, loserId, reason = 'win') => {
-        const gameId = game.id.toString();
-        clearGameTimers(gameId);
+        for (let i = 1; i < 8; i++) {
+            const nr = r + dr * i;
+            const nc = c + dc * i;
 
-        const settings = await getLiveSettings();
-        const totalPot = game.betAmount * 2;
-        const commission = totalPot * settings.platformCommission;
-        const prizePool = totalPot - commission;
-        const winnerUser = await User.findById(winnerId);
-        const loserUser = await User.findById(loserId);
+            if (!(nr >= 0 && nr < 8 && nc >= 0 && nc < 8)) break;
 
-        if (winnerUser && loserUser) {
-            if (game.bettingMode === 'real') {
-                winnerUser.balance += prizePool;
+            const targetCell = board[nr][nc];
+
+            if (targetCell) {
+                if (isOpponent(piece, targetCell)) {
+                    if (opponentFound) break;
+                    opponentFound = targetCell;
+                    opponentPos = {r: nr, c: nc};
+                } else {
+                    break;
+                }
             } else {
-                winnerUser.bonusBalance += prizePool;
+                if (opponentFound) {
+                    moves.push({
+                        from: [r, c],
+                        to: [nr, nc],
+                        captured: [[opponentPos.r, opponentPos.c]]
+                    });
+                }
             }
-            winnerUser.stats.wins += 1;
-            loserUser.stats.losses += 1;
-            await winnerUser.save();
-            await loserUser.save();
+        }
+    }
+    return moves;
+};
+
+const findCaptureMovesForPawn = (board, r, c) => {
+    const piece = board[r][c];
+    if (!piece || piece.length > 1) return [];
+    const moves = [];
+    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+
+    for (const [dr, dc] of directions) {
+        const nr = r + dr;
+        const nc = c + dc;
+        const nnr = r + dr * 2;
+        const nnc = c + dc * 2;
+
+        if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8) {
+            if(board[nnr][nnc] === E) {
+                const jumpedPiece = board[nr][nc];
+                if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
+                    moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
+                }
+            }
+        }
+    }
+    return moves;
+};
+
+const findSimpleMoves = (board, r, c) => {
+    const piece = board[r][c];
+    if (!piece) return [];
+    const moves = [];
+    
+    if (piece === W || piece === B) {
+        const forward = piece === W ? -1 : 1;
+        const directions = [[forward, -1], [forward, 1]];
+        for (const [dr, dc] of directions) {
+            const nr = r + dr;
+            const nc = c + dc;
+            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === E) {
+                moves.push({ from: [r, c], to: [nr, nc], captured: [] });
+            }
+        }
+    } else {
+        const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+        for (const [dr, dc] of directions) {
+            for (let i = 1; i < 8; i++) {
+                const nr = r + dr * i;
+                const nc = c + dc * i;
+                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === E) {
+                    moves.push({ from: [r, c], to: [nr, nc], captured: [] });
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    return moves;
+};
+
+// --- FUNÇÃO INTERNA CORRIGIDA ---
+const _simulateMoveOnBoard = (board, move) => {
+    const newBoard = JSON.parse(JSON.stringify(board));
+    const [startR, startC] = move.from;
+    const [endR, endC] = move.to;
+    const piece = newBoard[startR][startC];
+
+    newBoard[endR][endC] = piece;
+    newBoard[startR][startC] = E;
+
+    for (const [capR, capC] of move.captured) {
+        newBoard[capR][capC] = E;
+    }
+    
+    return newBoard;
+};
+
+const applyMoveToBoard = (board, move) => {
+    const newBoard = JSON.parse(JSON.stringify(board));
+    const [startR, startC] = move.from;
+    const [endR, endC] = move.to;
+    let piece = newBoard[startR][startC];
+
+    newBoard[endR][endC] = piece;
+    newBoard[startR][startC] = E;
+
+    if (move.captured && move.captured.length > 0) {
+        for (const [capR, capC] of move.captured) {
+            newBoard[capR][capC] = E;
+        }
+    }
+
+    const shouldPromote = (piece === W && endR === 0) || (piece === B && endR === 7);
+    if (shouldPromote) {
+        newBoard[endR][endC] = piece === W ? WK : BK;
+    }
+    
+    return newBoard;
+};
+
+const getPossibleMovesForPlayer = (board, playerColor) => {
+    let allPlayerPieces = [];
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if (board[r][c] && board[r][c].startsWith(playerColor)) {
+                allPlayerPieces.push([r, c]);
+            }
+        }
+    }
+    
+    let allCaptureSequences = [];
+    for(const [r,c] of allPlayerPieces) {
+        const piece = board[r][c];
+        const isKing = piece.length > 1;
+        const sequences = findCaptureSequencesFrom(board, r, c, isKing, { from: [r, c], to: null, captured: [] });
+        allCaptureSequences.push(...sequences);
+    }
+
+    if (allCaptureSequences.length > 0) {
+        let maxCaptures = 0;
+        for(const seq of allCaptureSequences){
+            if(seq.captured.length > maxCaptures){
+                maxCaptures = seq.captured.length;
+            }
+        }
+        return allCaptureSequences.filter(seq => seq.captured.length === maxCaptures);
+    }
+    
+    let allSimpleMoves = [];
+    for (const [r, c] of allPlayerPieces) {
+        allSimpleMoves.push(...findSimpleMoves(board, r, c));
+    }
+    return allSimpleMoves;
+};
+
+const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
+    const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
+    
+    if (captureMoves.length === 0) {
+        if (sequence.captured.length > 0) {
+            sequence.to = [r, c];
+            return [sequence];
+        }
+        return [];
+    }
+
+    let allPossiblePaths = [];
+    for (const move of captureMoves) {
+        // --- USA A SIMULAÇÃO CORRETA QUE NÃO PROMOVE A PEÇA ---
+        const nextBoard = _simulateMoveOnBoard(currentBoard, move);
+        const [nextR, nextC] = move.to;
+        
+        // As peças peão não podem andar para trás durante uma captura
+        if (!isKing && move.captured.length > 0) {
+            const movedPiece = currentBoard[move.from[0]][move.from[1]];
+            const isPawnMoveBackwards = (movedPiece === 'w' && nextR > r) || (movedPiece === 'b' && nextR < r);
+            if (isPawnMoveBackwards) continue;
         }
 
-        game.status = 'completed';
-        game.winner = winnerId;
-        game.commissionAmount = commission;
-
-        const piecesCaptured = game.moveHistory
-            .filter(m => m.player.equals(winnerId))
-            .reduce((acc, m) => acc + (m.captured ? m.captured.length : 0), 0);
-
-        const finalStats = {
-            winner: winnerUser ? winnerUser.toObject() : null,
-            prize: prizePool,
-            moves: game.moveHistory.length,
-            piecesCaptured,
-            reason
+        const newSequence = {
+            from: sequence.from,
+            to: null,
+            captured: [...sequence.captured, ...move.captured],
         };
 
-        await game.save();
-        io.to(gameId).emit('game_over', finalStats);
-    };
+        // Um peão é promovido a Dama no meio do turno se atingir a última fileira, mas continua a sua vez de captura.
+        const shouldPromoteMidTurn = !isKing && ( (currentBoard[r][c] === 'w' && nextR === 0) || (currentBoard[r][c] === 'b' && nextR === 7) );
 
-    const startTurnTimer = (game) => {
-        const gameId = game.id.toString();
-        clearGameTimers(gameId);
-        let remainingTime = 90;
-
-        const visualTimer = setInterval(() => {
-            io.to(gameId).emit('turn_timer_tick', { remainingTime });
-            remainingTime--;
-        }, 1000);
-
-        const inactivityTimeout = setTimeout(async () => {
-            clearInterval(visualTimer);
-            const updatedGame = await Game.findById(gameId);
-            if (updatedGame && updatedGame.status === 'in_progress') {
-                console.log(`Jogo ${gameId} terminado por inatividade do jogador ${updatedGame.currentPlayer}.`);
-                const loserId = updatedGame.currentPlayer;
-                const winnerId = updatedGame.players.find(p => !p.equals(loserId));
-                handleGameOver(updatedGame, winnerId, loserId, 'timeout');
-            }
-        }, 91000); // 91 segundos
-
-        gameTimers[gameId] = { inactivityTimeout, visualTimer };
-    };
-
-    io.on('connection', (socket) => {
-        const userId = socket.handshake.query.userId;
-        if (userId) {
-            console.log(`Utilizador conectado: ${userId} com socket ID: ${socket.id}`);
-            activeUsers[userId] = socket.id;
-            socket.join(userId);
-
-            Object.keys(gameTimers).forEach(gameId => {
-                const timer = gameTimers[gameId];
-                if (timer && timer.disconnectingUserId && timer.disconnectingUserId.toString() === userId) {
-                    console.log(`Utilizador ${userId} reconectou-se ao jogo ${gameId}. Cancelando timer de abandono.`);
-                    clearTimeout(timer.disconnectTimeout);
-                    delete timer.disconnectTimeout;
-                    delete timer.disconnectingUserId;
-                }
-            });
+        const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, isKing || shouldPromoteMidTurn, newSequence);
+        
+        if (continuingPaths.length > 0) {
+            allPossiblePaths.push(...continuingPaths);
+        } else {
+            newSequence.to = [nextR, nextC];
+            allPossiblePaths.push(newSequence);
         }
-        
-        socket.on('join_game_room', async ({ gameId }) => {
-            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!userId) return;
-            const game = await Game.findById(gameId).populate('players', 'username avatar');
-            if (!game) return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada.' });
-            socket.join(gameId);
-            io.to(socket.id).emit('game_state', game);
-        });
-
-        socket.on('get_lobby', () => {
-             io.to(socket.id).emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
-        });
-
-        socket.on('set_betting_mode', async ({ mode }) => {
-            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!userId || !['real', 'bonus'].includes(mode)) return;
-            try {
-                const user = await User.findById(userId);
-                if (user) {
-                    user.activeBettingMode = mode;
-                    await user.save();
-                    io.to(socket.id).emit('mode_changed_success', { newMode: mode });
-                }
-            } catch (error) {
-                io.to(socket.id).emit('error_message', { message: 'Erro ao alterar o modo de aposta.' });
-            }
-        });
-
-        socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
-            // (Esta função permanece a mesma)
-        });
-        
-        socket.on('cancel_game', async ({ gameId }) => {
-            // (Esta função permanece a mesma)
-        });
-
-        socket.on('join_game', async ({ gameCodeOrId }) => {
-            // (Esta função permanece a mesma)
-        });
-        
-        socket.on('player_ready', async ({ gameId }) => {
-            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            const game = await Game.findById(gameId);
-            if (!game || !userId || game.ready.map(id => id.toString()).includes(userId)) return;
-            game.ready.push(new mongoose.Types.ObjectId(userId));
-            if (game.ready.length === 2) {
-                const player1 = await User.findById(game.players[0]);
-                const player2 = await User.findById(game.players[1]);
-                if (game.bettingMode === 'real') {
-                    if (player1.balance < game.betAmount || player2.balance < game.betAmount) {
-                         io.to(gameId).emit('error_message', { message: 'Um dos jogadores não tem saldo real suficiente.' });
-                         await Game.findByIdAndDelete(gameId);
-                         return;
-                    }
-                    player1.balance -= game.betAmount;
-                    player2.balance -= game.betAmount;
-                } else {
-                    if (player1.bonusBalance < game.betAmount || player2.bonusBalance < game.betAmount) {
-                         io.to(gameId).emit('error_message', { message: 'Um dos jogadores não tem saldo de bónus suficiente.' });
-                         await Game.findByIdAndDelete(gameId);
-                         return;
-                    }
-                    player1.bonusBalance -= game.betAmount;
-                    player2.bonusBalance -= game.betAmount;
-                }
-                await player1.save();
-                await player2.save();
-                game.status = 'in_progress';
-                await game.save();
-                io.to(gameId).emit('game_start_countdown');
-                startTurnTimer(game);
-            } else {
-                await game.save();
-                io.to(gameId).emit('update_ready_status', { userId });
-            }
-        });
-
-        socket.on('make_move', async ({ gameId, move }) => {
-            const game = await Game.findById(gameId).populate('players');
-            const playerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
-            const playerIndex = game.players.findIndex(p => p._id.equals(playerId));
-            if (playerIndex === -1) return;
-            const playerSymbol = playerIndex === 0 ? 'b' : 'w';
-            const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
-            const isValidMove = possibleMoves.some(pMove => JSON.stringify(pMove.from) === JSON.stringify(move.from) && JSON.stringify(pMove.to) === JSON.stringify(move.to));
-            if (!isValidMove) return console.log(`Movimento inválido rejeitado.`);
-            const fullMove = possibleMoves.find(pMove => JSON.stringify(pMove.from) === JSON.stringify(move.from) && JSON.stringify(pMove.to) === JSON.stringify(move.to));
-            move.captured = fullMove.captured;
-            game.boardState = applyMoveToBoard(game.boardState, move);
-            const opponent = game.players.find(p => !p._id.equals(playerId));
-            game.currentPlayer = opponent._id;
-            game.moveHistory.push({ player: new mongoose.Types.ObjectId(playerId), from: {r: move.from[0], c: move.from[1]}, to: {r: move.to[0], c: move.to[1]}, captured: move.captured });
-            const winState = checkWinCondition(game.boardState, playerSymbol);
-            if (winState.winner) {
-                await handleGameOver(game, playerId, opponent._id, 'win');
-            } else {
-                await game.save();
-                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
-                startTurnTimer(game);
-            }
-        });
-
-        socket.on('surrender', async ({ gameId }) => {
-            const game = await Game.findById(gameId).populate('players');
-            const surrendererId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!game || !surrendererId) return;
-            const winner = game.players.find(p => !p._id.equals(surrendererId));
-            if (!winner) return;
-            if (game.status === 'in_progress') {
-                await handleGameOver(game, winner._id, surrendererId, 'surrender');
-            } else {
-                game.status = 'abandoned';
-                game.winner = winner._id;
-                await game.save();
-                clearGameTimers(gameId);
-                io.to(game.id).emit('game_over', { surrendered: true, winner: winner.toObject(), reason: 'surrender' });
-            }
-        });
-        
-        socket.on('disconnect', async () => {
-            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (userId) {
-                console.log(`Utilizador desconectado: ${userId}`);
-                delete activeUsers[userId];
-                const game = await Game.findOne({ players: userId, status: 'in_progress' });
-                if (game) {
-                    const gameId = game.id.toString();
-                    console.log(`Utilizador ${userId} estava no jogo ${gameId}. Iniciando timer de 5 minutos para abandono.`);
-                    if (!gameTimers[gameId]) gameTimers[gameId] = {};
-                    gameTimers[gameId].disconnectingUserId = userId;
-                    gameTimers[gameId].disconnectTimeout = setTimeout(async () => {
-                        if (!activeUsers[userId]) {
-                            console.log(`Timer de 5 minutos expirou para ${userId}. Oponente vence.`);
-                            const winnerId = game.players.find(p => !p.equals(userId));
-                            handleGameOver(game, winnerId, userId, 'disconnect');
-                        }
-                    }, 300000); // 5 minutos
-                }
-            }
-        });
-    });
+    }
+    
+    return allPossiblePaths;
 };
 
-module.exports = socketManager;
+
+const checkWinCondition = (board, playerWhoJustMovedColor) => {
+    const opponentColor = playerWhoJustMovedColor === 'w' ? 'b' : 'w';
+    
+    let opponentPiecesCount = 0;
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if (board[r][c] && board[r][c].startsWith(opponentColor)) {
+                opponentPiecesCount++;
+            }
+        }
+    }
+    
+    if (opponentPiecesCount === 0) {
+        return { winner: playerWhoJustMovedColor };
+    }
+    
+    const opponentMoves = getPossibleMovesForPlayer(board, opponentColor);
+    if (opponentMoves.length === 0) {
+        return { winner: playerWhoJustMovedColor };
+    }
+    
+    return { winner: null };
+};
+
+module.exports = {
+    createInitialBoard,
+    getPossibleMovesForPlayer,
+    applyMoveToBoard,
+    checkWinCondition,
+    pieceTypes: { B, W, BK, WK, E }
+};
