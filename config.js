@@ -5,7 +5,7 @@ const config = {
     minWithdrawal: 50.00,
     maxWithdrawal: 10000.00,
     maxBet: 5000.00,
-    minBet: 10.00,
+    minBet: 50.00,
     passwordResetTokenExpiresIn: 15, // in minutes
     platformName: "BrainSkill",
     colors: {

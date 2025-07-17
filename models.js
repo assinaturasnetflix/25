@@ -1,3 +1,7 @@
+// ==========================================================
+// FICHEIRO: models.js (Versão Completa e Corrigida)
+// ==========================================================
+
 const mongoose = require('mongoose');
 const { generateNumericId } = require('./utils');
 const config = require('./config');
@@ -10,7 +14,7 @@ const settingSchema = new mongoose.Schema({
     minWithdrawal: { type: Number, default: 50.00 },
     maxWithdrawal: { type: Number, default: 10000.00 },
     maxBet: { type: Number, default: 5000.00 },
-    minBet: { type: Number, default: 10.00 },
+    minBet: { type: Number, default: 50.00 },
     passwordResetTokenExpiresIn: { type: Number, default: 15 },
     platformName: { type: String, default: "BrainSkill" },
     isBonusEnabled: { type: Boolean, default: true },
@@ -40,9 +44,6 @@ const userSchema = new mongoose.Schema({
     isBlocked: { type: Boolean, default: false },
     passwordResetToken: String,
     passwordResetExpires: Date,
-    // --- CAMPO ADICIONADO AQUI ---
-    // Armazenará o objeto de inscrição para as notificações push.
-    // O tipo 'Mixed' permite que ele armazene um objeto JSON flexível.
     pushSubscription: { type: mongoose.Schema.Types.Mixed } 
 }, { timestamps: true });
 
@@ -69,6 +70,11 @@ const transactionSchema = new mongoose.Schema({
 const gameSchema = new mongoose.Schema({
     gameId: { type: String, unique: true, default: () => `G${generateNumericId(5)}` },
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+
+    // --- CAMPO ADICIONADO E CORRIGIDO ---
+    creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // ------------------------------------
+
     bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     boardState: { type: [[String]], required: true },
     currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
