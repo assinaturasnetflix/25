@@ -2,7 +2,7 @@ const config = {
     platformCommission: 0.15,
     minDeposit: 50.00,
     maxDeposit: 10000.00,
-    minWithdrawal: 50.00,
+    // minWithdrawal: 50.00, // REMOVER OU COMENTAR ESTA LINHA, pois será dinâmico do DB
     maxWithdrawal: 10000.00,
     maxBet: 5000.00,
     minBet: 10.00,
@@ -14,7 +14,7 @@ const config = {
         accent: '#333333'
     },
     font: 'Oswald',
-    defaultAvatarIcon: 'user', 
+    defaultAvatarIcon: 'user',
     gameRules: {
         boardSize: 8,
         piecesPerPlayer: 12,
@@ -32,7 +32,10 @@ const config = {
             accountNumber: "86XXXXXXX",
             accountName: "Nome do Titular e-Mola"
         }
-    ]
+    ],
+    // NOVOS CAMPOS PARA BÔNUS, se você quiser tê-los como padrão aqui também
+    isBonusEnabled: true,
+    welcomeBonusAmount: 1000.00,
 };
 
 module.exports = config;

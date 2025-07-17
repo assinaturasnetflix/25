@@ -17,7 +17,7 @@ async function verifyRecaptcha(token) {
     const secretKey = process.env.RECAPTCHA_SECRET_KEY;
     if (!secretKey) {
         console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. A verificação será ignorada em ambiente de desenvolvimento.");
-        return true; 
+        return true;
     }
     try {
         const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`);
@@ -31,410 +31,612 @@ async function verifyRecaptcha(token) {
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
+        // Se não houver configurações, crie uma com os padrões do defaultConfig e o singleton
         settings = await Setting.create({ singleton: 'main_settings', ...defaultConfig });
     }
     return settings;
 };
 
-const generateToken = (id) => {
-    return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+
+const generateToken = (id, role) => {
+    return jwt.sign({ id, role }, process.env.JWT_SECRET, {
+        expiresIn: '1d', // Token expira em 1 dia
+    });
 };
 
 const controllers = {
     registerUser: async (req, res) => {
-        const recaptchaToken = req.body['g-recaptcha-response'];
-        if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
-            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
-        }
+        const { username, email, password, recaptchaToken } = req.body;
 
-        const { username, email, password } = req.body;
-        if (!username || !email || !password || password.length < 6) {
-            return res.status(400).json({ message: 'Dados inválidos. A senha deve ter no mínimo 6 caracteres.' });
+        const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
+        if (!isRecaptchaValid) {
+            return res.status(400).json({ message: 'Verificação reCAPTCHA falhou. Por favor, tente novamente.' });
         }
-
-        const userExists = await User.findOne({ $or: [{ email: email.toLowerCase() }, { username }] });
-        if (userExists) {
-            return res.status(400).json({ message: 'Utilizador ou email já registado.' });
-        }
-
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const settings = await getLiveSettings();
 
         try {
-            const user = await User.create({
-                username,
-                email: email.toLowerCase(),
-                password: hashedPassword,
-                bonusBalance: settings.isBonusEnabled ? settings.welcomeBonusAmount : 0,
-            });
+            const hashedPassword = await bcrypt.hash(password, 10);
+            const user = new User({ username, email, password: hashedPassword });
+            await user.save();
 
-            res.status(201).json({
-                _id: user._id,
-                username: user.username,
-                avatar: user.avatar,
-                token: generateToken(user._id),
-            });
+            // Adicionar bônus de boas-vindas se ativado
+            const settings = await getLiveSettings();
+            if (settings.isBonusEnabled && settings.welcomeBonusAmount > 0) {
+                user.bonusBalance += settings.welcomeBonusAmount;
+                await user.save(); // Salvar novamente para incluir o bônus
+            }
+
+            const token = generateToken(user._id, user.role);
+            res.status(201).json({ message: 'Usuário registrado com sucesso!', token, _id: user._id, username: user.username, email: user.email, role: user.role });
         } catch (error) {
-            res.status(400).json({ message: 'Dados de utilizador inválidos.' });
+            if (error.code === 11000) {
+                return res.status(400).json({ message: 'Nome de usuário ou e-mail já existe.' });
+            }
+            res.status(500).json({ message: 'Erro ao registrar usuário.', error: error.message });
         }
     },
 
     loginUser: async (req, res) => {
-        // --- CORREÇÃO APLICADA AQUI: VERIFICAÇÃO OBRIGATÓRIA PARA TODOS ---
-        const recaptchaToken = req.body['g-recaptcha-response'];
-        if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
-            return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
-        }
-        
-        const { email, password } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
+        const { email, password, recaptchaToken } = req.body;
 
-        if (user && (await bcrypt.compare(password, user.password))) {
-            if (user.isBlocked) {
-                return res.status(403).json({ message: 'Esta conta encontra-se bloqueada.' });
+        const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
+        if (!isRecaptchaValid) {
+            return res.status(400).json({ message: 'Verificação reCAPTCHA falhou. Por favor, tente novamente.' });
+        }
+
+        try {
+            const user = await User.findOne({ email });
+            if (!user) {
+                return res.status(400).json({ message: 'Credenciais inválidas.' });
             }
-            res.json({
-                _id: user._id,
-                username: user.username,
-                email: user.email,
-                avatar: user.avatar,
-                role: user.role,
-                token: generateToken(user._id),
-            });
-        } else {
-            res.status(401).json({ message: 'Email ou senha inválidos.' });
+
+            if (user.isBlocked) {
+                return res.status(403).json({ message: 'Sua conta foi bloqueada. Entre em contacto com o suporte.' });
+            }
+
+            const isMatch = await bcrypt.compare(password, user.password);
+            if (!isMatch) {
+                return res.status(400).json({ message: 'Credenciais inválidas.' });
+            }
+
+            const token = generateToken(user._id, user.role);
+            res.status(200).json({ message: 'Login bem-sucedido!', token, _id: user._id, username: user.username, email: user.email, role: user.role });
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao fazer login.', error: error.message });
         }
     },
 
     forgotPassword: async (req, res) => {
         const { email } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase() });
-
-        if (!user) {
-            return res.status(200).json({ message: 'Se um utilizador com este email existir, um código de recuperação foi enviado.' });
-        }
-        
-        const settings = await getLiveSettings();
-        const resetCode = generateNumericId(6);
-        user.passwordResetToken = crypto.createHash('sha256').update(resetCode).digest('hex');
-        user.passwordResetExpires = Date.now() + (settings.passwordResetTokenExpiresIn * 60 * 1000);
-
-        await user.save({ validateBeforeSave: false });
-
         try {
-            await sendPasswordResetEmail(user.email, resetCode, settings.platformName, settings.passwordResetTokenExpiresIn);
-            res.status(200).json({ message: 'Email com código de recuperação enviado.' });
+            const user = await User.findOne({ email });
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            const resetToken = crypto.randomBytes(20).toString('hex');
+            user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+
+            const settings = await getLiveSettings();
+            user.passwordResetExpires = Date.now() + settings.passwordResetTokenExpiresIn * 60 * 1000; // Tempo em minutos
+            await user.save();
+
+            await sendPasswordResetEmail(user.email, resetToken);
+            res.status(200).json({ message: 'Email de recuperação de senha enviado.' });
         } catch (error) {
-            console.error("Erro ao enviar email:", error);
-            user.passwordResetToken = undefined;
-            user.passwordResetExpires = undefined;
-            await user.save({ validateBeforeSave: false });
-            res.status(500).json({ message: 'Erro ao enviar o email de recuperação.' });
+            res.status(500).json({ message: 'Erro ao enviar email de recuperação.', error: error.message });
         }
     },
 
     resetPassword: async (req, res) => {
-        const { code, password } = req.body;
-        if (!code || !password || password.length < 6) {
-             return res.status(400).json({ message: 'Por favor, forneça o código e uma nova senha com no mínimo 6 caracteres.' });
-        }
-        
-        const hashedToken = crypto.createHash('sha256').update(code).digest('hex');
+        const { token, newPassword } = req.body;
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
         try {
             const user = await User.findOne({
                 passwordResetToken: hashedToken,
-                passwordResetExpires: { $gt: Date.now() },
+                passwordResetExpires: { $gt: Date.now() }
             });
 
             if (!user) {
-                return res.status(400).json({ message: 'Código inválido ou expirado.' });
+                return res.status(400).json({ message: 'Token inválido ou expirado.' });
             }
 
-            const salt = await bcrypt.genSalt(10);
-            user.password = await bcrypt.hash(password, salt);
+            user.password = await bcrypt.hash(newPassword, 10);
             user.passwordResetToken = undefined;
             user.passwordResetExpires = undefined;
             await user.save();
 
-            res.status(200).json({ message: 'Senha redefinida com sucesso.' });
+            res.status(200).json({ message: 'Senha redefinida com sucesso!' });
         } catch (error) {
-            console.error("Erro ao redefinir senha:", error);
-            res.status(500).json({ message: "Ocorreu um erro no servidor." });
+            res.status(500).json({ message: 'Erro ao redefinir senha.', error: error.message });
         }
     },
 
-    getPublicPaymentMethods: async (req, res) => {
-        const settings = await getLiveSettings();
-        res.json(settings.paymentMethods.map(m => ({
-            name: m.name,
-            number: m.accountNumber,
-            holder: m.accountName,
-            instructions: m.instructions
-        })));
-    },
-
-    getMe: async (req, res) => {
-        const user = await User.findById(req.user.id).select('-password -passwordResetToken -passwordResetExpires');
-        res.status(200).json(user);
-    },
-    
-    getPublicProfile: async (req, res) => {
-        const user = await User.findById(req.params.id).select('username avatar bio stats createdAt');
-        if (!user) {
-            return res.status(404).json({ message: 'Utilizador não encontrado.' });
+    getProfile: async (req, res) => {
+        try {
+            const user = await User.findById(req.user.id).select('-password');
+            if (!user) {
+                return res.status(404).json({ message: 'Perfil não encontrado.' });
+            }
+            res.status(200).json(user);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar perfil.', error: error.message });
         }
-        res.status(200).json(user);
     },
 
     updateProfile: async (req, res) => {
-        const { bio } = req.body;
-        const user = await User.findById(req.user.id);
-        if (user) {
-            user.bio = bio;
-            const updatedUser = await user.save();
-            res.json({ bio: updatedUser.bio });
-        } else {
-            res.status(404).json({ message: 'Utilizador não encontrado.' });
-        }
-    },
-    
-    updatePassword: async (req, res) => {
-        const { oldPassword, newPassword } = req.body;
-        if (!oldPassword || !newPassword || newPassword.length < 6) {
-            return res.status(400).json({ message: 'Dados inválidos fornecidos.'});
-        }
-        const user = await User.findById(req.user.id);
-        if (user && (await bcrypt.compare(oldPassword, user.password))) {
-             const salt = await bcrypt.genSalt(10);
-             user.password = await bcrypt.hash(newPassword, salt);
-             await user.save();
-             res.status(200).json({ message: 'Senha alterada com sucesso.' });
-        } else {
-            res.status(401).json({ message: 'Senha antiga incorreta.' });
+        const { username, email } = req.body;
+        try {
+            const user = await User.findById(req.user.id);
+            if (!user) {
+                return res.status(404).json({ message: 'Perfil não encontrado.' });
+            }
+
+            user.username = username || user.username;
+            user.email = email || user.email;
+
+            await user.save();
+            res.status(200).json({ message: 'Perfil atualizado com sucesso!', user: user });
+        } catch (error) {
+            if (error.code === 11000) {
+                return res.status(400).json({ message: 'Nome de usuário ou e-mail já existe.' });
+            }
+            res.status(500).json({ message: 'Erro ao atualizar perfil.', error: error.message });
         }
     },
 
     uploadAvatar: async (req, res) => {
-        if (!req.file) return res.status(400).json({ message: 'Nenhum ficheiro enviado.' });
         try {
             const user = await User.findById(req.user.id);
-            if (!user) return res.status(404).json({ message: 'Utilizador não encontrado' });
-            if (user.avatar && user.avatar.public_id !== 'default_avatar_id') {
-                await cloudinary.uploader.destroy(user.avatar.public_id);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
             }
+
+            if (!req.file) {
+                return res.status(400).json({ message: 'Nenhum arquivo enviado.' });
+            }
+
             const result = await cloudinary.uploader.upload(req.file.path, {
                 folder: 'brainskill_avatars',
-                width: 150, height: 150, crop: 'fill',
+                width: 150,
+                height: 150,
+                crop: 'fill'
             });
-            user.avatar = { public_id: result.public_id, url: result.secure_url };
+
+            if (user.avatar) {
+                const publicId = user.avatar.split('/').pop().split('.')[0];
+                await cloudinary.uploader.destroy(`brainskill_avatars/${publicId}`);
+            }
+
+            user.avatar = result.secure_url;
             await user.save();
-            res.status(200).json({ url: result.secure_url });
+            res.status(200).json({ message: 'Avatar atualizado com sucesso!', avatarUrl: user.avatar });
         } catch (error) {
-            res.status(500).json({ message: 'Falha no upload da imagem.' });
+            console.error('Erro ao fazer upload do avatar:', error);
+            res.status(500).json({ message: 'Erro ao fazer upload do avatar.', error: error.message });
         }
     },
-    
+
     getRanking: async (req, res) => {
-        const ranking = await User.find({ role: 'user' })
-            .sort({ 'stats.wins': -1, 'stats.losses': 1, 'createdAt': 1 })
-            .select('username avatar stats createdAt');
-        res.status(200).json(ranking);
+        try {
+            const users = await User.find({ isBlocked: false }).sort({ balance: -1, username: 1 }).select('username balance avatar').limit(10);
+            res.status(200).json(users);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar ranking.', error: error.message });
+        }
+    },
+
+    getPublicPaymentMethods: async (req, res) => {
+        try {
+            const settings = await getLiveSettings();
+            res.status(200).json(settings.paymentMethods.filter(method => method.isActive));
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar métodos de pagamento.', error: error.message });
+        }
     },
 
     createDeposit: async (req, res) => {
-        const { amount, method, proofText } = req.body;
-        const settings = await getLiveSettings();
-        if (!amount || !method || (!proofText && !req.file)) {
-            return res.status(400).json({ message: 'Dados insuficientes para o depósito.' });
-        }
-        if (Number(amount) < settings.minDeposit) {
-            return res.status(400).json({ message: `O depósito mínimo é de ${settings.minDeposit} MT.` });
-        }
-        let proofData = proofText;
-        if (req.file) {
-            try {
-                 const result = await cloudinary.uploader.upload(req.file.path, { folder: 'brainskill_proofs' });
-                 proofData = result.secure_url;
-            } catch(e) {
-                return res.status(500).json({ message: 'Erro ao carregar o comprovativo.'});
-            }
-        }
+        const { amount, paymentMethodId, transactionId } = req.body;
+        const userId = req.user.id;
+
         try {
-            const transaction = await Transaction.create({
-                userId: req.user.id,
+            const settings = await getLiveSettings();
+            if (amount < settings.minDeposit || amount > settings.maxDeposit) {
+                return res.status(400).json({ message: `O valor do depósito deve estar entre ${settings.minDeposit} MT e ${settings.maxDeposit} MT.` });
+            }
+
+            const paymentMethod = settings.paymentMethods.id(paymentMethodId);
+            if (!paymentMethod || !paymentMethod.isActive) {
+                return res.status(400).json({ message: 'Método de pagamento inválido ou inativo.' });
+            }
+
+            // O comprovante de pagamento é enviado como req.file
+            let proofOfPaymentUrl = '';
+            if (req.file) {
+                const result = await cloudinary.uploader.upload(req.file.path, {
+                    folder: 'brainskill_proofs',
+                    quality: 'auto',
+                    fetch_format: 'auto'
+                });
+                proofOfPaymentUrl = result.secure_url;
+            }
+
+            const transaction = new Transaction({
+                user: userId,
                 type: 'deposit',
-                amount: Number(amount),
-                method,
-                proof: proofData,
+                amount: amount,
+                status: 'pending',
+                paymentMethod: paymentMethod.name,
+                transactionId: transactionId,
+                proofOfPayment: proofOfPaymentUrl
             });
-            res.status(201).json(transaction);
-        } catch(e) {
-            res.status(500).json({ message: 'Erro ao criar a transação.' });
+            await transaction.save();
+
+            res.status(201).json({ message: 'Depósito enviado para aprovação.', transaction });
+        } catch (error) {
+            console.error('Erro ao criar depósito:', error);
+            res.status(500).json({ message: 'Erro ao criar depósito.', error: error.message });
         }
     },
 
     createWithdrawal: async (req, res) => {
-        const { amount, method, holderName, phoneNumber } = req.body;
-        const user = await User.findById(req.user.id);
-        const settings = await getLiveSettings();
-        if (!amount || !method || !holderName || !phoneNumber) {
-             return res.status(400).json({ message: 'Por favor, preencha todos os campos.' });
-        }
-        if (Number(amount) < settings.minWithdrawal) {
-            return res.status(400).json({ message: `O levantamento mínimo é de ${settings.minWithdrawal} MT.` });
-        }
-        if (user.balance < Number(amount)) {
-            return res.status(400).json({ message: 'Saldo real insuficiente para levantamento.' });
-        }
-        user.balance -= Number(amount);
+        const { amount, paymentMethodId, recipientAccount, recipientName } = req.body;
+        const userId = req.user.id;
+
         try {
-            const transaction = await Transaction.create({
-                userId: req.user.id,
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            const settings = await getLiveSettings();
+            const minWithdrawal = settings ? settings.minWithdrawal : defaultConfig.minWithdrawal; // Usar valor do DB ou um padrão
+            const maxWithdrawal = settings ? settings.maxWithdrawal : defaultConfig.maxWithdrawal; // Usar valor do DB ou um padrão
+
+
+            if (amount < minWithdrawal || amount > maxWithdrawal) {
+                return res.status(400).json({ message: `O valor do levantamento deve estar entre ${minWithdrawal} MT e ${maxWithdrawal} MT.` });
+            }
+
+            if (user.balance < amount) {
+                return res.status(400).json({ message: 'Saldo insuficiente.' });
+            }
+
+            const paymentMethod = settings.paymentMethods.id(paymentMethodId);
+            if (!paymentMethod || !paymentMethod.isActive) {
+                return res.status(400).json({ message: 'Método de pagamento inválido ou inativo.' });
+            }
+
+            // Subtrai o valor do saldo imediatamente, o status ainda é 'pending'
+            user.balance -= amount;
+            await user.save();
+
+            const transaction = new Transaction({
+                user: userId,
                 type: 'withdrawal',
-                amount: Number(amount),
-                method,
-                holderName,
-                phoneNumber
+                amount: amount,
+                status: 'pending',
+                paymentMethod: paymentMethod.name,
+                recipientAccount,
+                recipientName
             });
-            await user.save();
-            res.status(201).json(transaction);
-        } catch(e) {
-            user.balance += Number(amount);
-            await user.save();
-            res.status(500).json({ message: 'Erro ao criar o pedido de levantamento.' });
+            await transaction.save();
+
+            res.status(201).json({ message: 'Pedido de levantamento enviado para aprovação.', transaction });
+        } catch (error) {
+            console.error('Erro ao criar levantamento:', error);
+            res.status(500).json({ message: 'Erro ao criar levantamento.', error: error.message });
         }
     },
 
     getMyTransactions: async (req, res) => {
-        const transactions = await Transaction.find({ userId: req.user.id }).sort({ createdAt: -1 });
-        res.status(200).json(transactions);
-    },
-    
-    getMyGames: async (req, res) => {
-        const games = await Game.find({ players: req.user.id, hiddenBy: { $ne: req.user.id } })
-        .populate('players', 'username avatar')
-        .populate('winner', 'username')
-        .sort({ createdAt: -1 });
-        res.status(200).json(games);
-    },
-    
-    hideGameFromHistory: async (req, res) => {
         try {
-            const game = await Game.findById(req.params.id);
-            if (!game) { return res.status(404).json({ message: 'Partida não encontrada.' }); }
-            if (!game.players.includes(req.user.id)) {
-                return res.status(403).json({ message: 'Você não tem permissão para alterar esta partida.' });
-            }
-            if (['waiting', 'in_progress'].includes(game.status)) {
-                return res.status(400).json({ message: 'Não é possível remover uma partida em andamento.' });
-            }
-            if (!game.hiddenBy.includes(req.user.id)) {
-                game.hiddenBy.push(req.user.id);
-                await game.save();
-            }
-            res.status(200).json({ message: 'Partida removida do histórico com sucesso.' });
+            const transactions = await Transaction.find({ user: req.user.id }).sort({ createdAt: -1 });
+            res.status(200).json(transactions);
         } catch (error) {
-            res.status(500).json({ message: 'Erro no servidor ao tentar remover a partida.' });
+            res.status(500).json({ message: 'Erro ao buscar transações.', error: error.message });
         }
     },
 
+    getMyGames: async (req, res) => {
+        try {
+            const games = await Game.find({
+                $or: [{ player1: req.user.id }, { player2: req.user.id }],
+                hiddenBy: { $ne: req.user.id } // Não mostrar jogos que o usuário escondeu
+            })
+                .populate('player1', 'username avatar')
+                .populate('player2', 'username avatar')
+                .sort({ createdAt: -1 });
+            res.status(200).json(games);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar jogos.', error: error.message });
+        }
+    },
+
+    hideGameFromHistory: async (req, res) => {
+        try {
+            const { id: gameId } = req.params;
+            const userId = req.user.id;
+
+            const game = await Game.findById(gameId);
+
+            if (!game) {
+                return res.status(404).json({ message: 'Jogo não encontrado.' });
+            }
+
+            // Verifica se o usuário é participante do jogo
+            if (!game.players.includes(userId)) {
+                return res.status(403).json({ message: 'Você não tem permissão para esconder este jogo.' });
+            }
+
+            if (!game.hiddenBy.includes(userId)) {
+                game.hiddenBy.push(userId);
+                await game.save();
+            }
+
+            res.status(200).json({ message: 'Jogo escondido do histórico com sucesso.' });
+        } catch (error) {
+            console.error('Erro ao esconder jogo do histórico:', error);
+            res.status(500).json({ message: 'Erro interno do servidor ao esconder jogo.' });
+        }
+    },
+
+
+    // --- FUNÇÕES DE ADMIN (ATUALIZADAS / NOVAS) ---
+
     getAllUsers: async (req, res) => {
-        const users = await User.find({}).select('-password');
-        res.json(users);
+        try {
+            const users = await User.find({}).select('-password').sort({ createdAt: -1 });
+            res.status(200).json(users);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar usuários.', error: error.message });
+        }
     },
 
     toggleBlockUser: async (req, res) => {
-        const user = await User.findById(req.params.id);
-        if (user) {
-            if(user.role === 'admin') return res.status(403).json({ message: 'Não é possível bloquear um administrador.'});
+        try {
+            const { id } = req.params;
+            const user = await User.findById(id);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
             user.isBlocked = !user.isBlocked;
             await user.save();
-            res.json({ message: `Utilizador ${user.isBlocked ? 'bloqueado' : 'desbloqueado'}.` });
-        } else {
-            res.status(404).json({ message: 'Utilizador não encontrado.' });
+            res.status(200).json({ message: 'Status do usuário atualizado.', user });
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao bloquear/desbloquear usuário.', error: error.message });
         }
     },
 
     manualBalanceUpdate: async (req, res) => {
-        const { amount, balanceType = 'balance' } = req.body;
-        const user = await User.findById(req.params.id);
-        if (!user) return res.status(404).json({ message: 'Utilizador não encontrado.' });
-        
-        const finalAmount = Number(amount);
-        if(isNaN(finalAmount)) return res.status(400).json({ message: 'Valor inválido.' });
+        try {
+            const { id } = req.params;
+            const { amount } = req.body; // amount pode ser positivo para adicionar, negativo para remover
 
-        if (balanceType === 'bonus') {
-            user.bonusBalance += finalAmount;
-        } else {
-            user.balance += finalAmount;
+            if (typeof amount !== 'number') {
+                return res.status(400).json({ message: 'Valor inválido.' });
+            }
+
+            const user = await User.findById(id);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            user.balance += amount;
+            await user.save();
+
+            res.status(200).json({ message: 'Saldo atualizado com sucesso.', user });
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao atualizar saldo.', error: error.message });
         }
-
-        await user.save();
-        res.json({ message: 'Saldo atualizado com sucesso.', newBalance: user.balance, newBonusBalance: user.bonusBalance });
     },
 
+    // NOVO: Função para o admin editar o saldo de bônus/DEMO de um usuário
+    adminUpdateUserBonusBalance: async (req, res) => {
+        try {
+            const { userId } = req.params;
+            const { bonusBalanceChange, type } = req.body; // bonusBalanceChange: valor a adicionar/remover, type: 'add' ou 'remove'
+
+            if (typeof bonusBalanceChange !== 'number' || bonusBalanceChange <= 0) {
+                return res.status(400).json({ message: 'Valor de alteração de bônus inválido.' });
+            }
+
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            if (type === 'add') {
+                user.bonusBalance += bonusBalanceChange;
+                await user.save();
+                return res.status(200).json({ message: 'Saldo de bônus adicionado com sucesso.', user });
+            } else if (type === 'remove') {
+                if (user.bonusBalance < bonusBalanceChange) {
+                    return res.status(400).json({ message: 'Saldo de bônus insuficiente para remover este valor.' });
+                }
+                user.bonusBalance -= bonusBalanceChange;
+                await user.save();
+                return res.status(200).json({ message: 'Saldo de bônus removido com sucesso.', user });
+            } else {
+                return res.status(400).json({ message: 'Tipo de operação de bônus inválido. Use "add" ou "remove".' });
+            }
+
+        } catch (error) {
+            console.error('Erro ao atualizar saldo de bônus do usuário:', error);
+            res.status(500).json({ message: 'Erro interno do servidor ao atualizar saldo de bônus.' });
+        }
+    },
+
+    // NOVO: Função para o admin ver o histórico completo de um usuário
+    adminGetUserHistory: async (req, res) => {
+        try {
+            const { userId } = req.params;
+
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            // Buscar transações do usuário
+            const transactions = await Transaction.find({ user: userId }).sort({ createdAt: -1 });
+
+            // Buscar jogos do usuário (como player1 ou player2)
+            const games = await Game.find({
+                $or: [{ player1: userId }, { player2: userId }]
+            }).sort({ createdAt: -1 })
+              .populate('player1', 'username avatar') // Popula o nome de usuário e avatar do player1
+              .populate('player2', 'username avatar'); // Popula o nome de usuário e avatar do player2
+
+            res.status(200).json({
+                user: {
+                    _id: user._id,
+                    username: user.username,
+                    email: user.email,
+                    balance: user.balance,
+                    bonusBalance: user.bonusBalance, // Incluir saldo de bônus
+                    isBlocked: user.isBlocked,
+                    role: user.role,
+                    createdAt: user.createdAt,
+                },
+                transactions,
+                games,
+            });
+
+        } catch (error) {
+            console.error('Erro ao buscar histórico do usuário:', error);
+            res.status(500).json({ message: 'Erro interno do servidor ao buscar histórico do usuário.' });
+        }
+    },
+
+
     getAllTransactions: async (req, res) => {
-        const transactions = await Transaction.find({}).populate('userId', 'username email').sort({ createdAt: -1 });
-        res.json(transactions);
+        try {
+            const transactions = await Transaction.find({})
+                .populate('user', 'username email') // Popula informações do usuário
+                .sort({ createdAt: -1 });
+            res.status(200).json(transactions);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar transações.', error: error.message });
+        }
     },
 
     processTransaction: async (req, res) => {
-        const { status, adminNotes } = req.body;
-        const transaction = await Transaction.findById(req.params.id);
-        if (!transaction || transaction.status !== 'pending') {
-            return res.status(404).json({ message: 'Transação não encontrada ou já processada.' });
-        }
-        
-        const user = await User.findById(transaction.userId);
-        if (!user) return res.status(404).json({ message: 'Utilizador da transação não encontrado.' });
+        const { id } = req.params;
+        const { status } = req.body; // 'approved' ou 'rejected'
 
-        if (status === 'approved' && transaction.type === 'deposit') {
-            user.balance += transaction.amount;
-        } else if (status === 'rejected' && transaction.type === 'withdrawal') {
-            user.balance += transaction.amount;
+        try {
+            const transaction = await Transaction.findById(id);
+            if (!transaction) {
+                return res.status(404).json({ message: 'Transação não encontrada.' });
+            }
+
+            if (transaction.status !== 'pending') {
+                return res.status(400).json({ message: `Transação já foi ${transaction.status}.` });
+            }
+
+            const user = await User.findById(transaction.user);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário da transação não encontrado.' });
+            }
+
+            transaction.status = status;
+
+            if (status === 'approved') {
+                if (transaction.type === 'deposit') {
+                    user.balance += transaction.amount;
+                } else if (transaction.type === 'withdrawal') {
+                    // O valor já foi deduzido no momento da solicitação de levantamento.
+                    // Se aprovado, não precisa de mais ação no saldo.
+                    // Se fosse rejeitado, o saldo deveria ser reembolsado.
+                }
+                await user.save();
+                await transaction.save();
+                res.status(200).json({ message: 'Transação aprovada com sucesso!', transaction });
+            } else if (status === 'rejected') {
+                if (transaction.type === 'withdrawal') {
+                    // Se for um levantamento e for rejeitado, devolve o dinheiro ao saldo do usuário
+                    user.balance += transaction.amount;
+                }
+                await user.save();
+                await transaction.save();
+                res.status(200).json({ message: 'Transação rejeitada com sucesso!', transaction });
+            } else {
+                res.status(400).json({ message: 'Status de transação inválido.' });
+            }
+
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao processar transação.', error: error.message });
         }
-        
-        transaction.status = status;
-        transaction.adminNotes = adminNotes;
-        await user.save();
-        await transaction.save();
-        res.json({ message: `Transação ${status}.` });
     },
-    
+
     getDashboardStats: async (req, res) => {
-        const totalDepositedResult = await Transaction.aggregate([ { $match: { type: 'deposit', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
-        const totalWithdrawnResult = await Transaction.aggregate([ { $match: { type: 'withdrawal', status: 'approved' } }, { $group: { _id: null, total: { $sum: '$amount' } } } ]);
-        const totalCommissionResult = await Game.aggregate([ { $match: { status: 'completed' } }, { $group: { _id: null, total: { $sum: '$commissionAmount' } } } ]);
-        
-        const totalDeposited = totalDepositedResult.length > 0 ? totalDepositedResult[0].total : 0;
-        const totalWithdrawn = totalWithdrawnResult.length > 0 ? totalWithdrawnResult[0].total : 0;
-        const lossRevenue = totalDeposited - totalWithdrawn;
+        try {
+            const totalUsers = await User.countDocuments();
+            const totalGames = await Game.countDocuments();
 
-        res.json({
-            totalDeposited,
-            totalWithdrawn,
-            totalCommission: totalCommissionResult.length > 0 ? totalCommissionResult[0].total : 0,
-            lossRevenue,
-            totalUsers: await User.countDocuments(),
-            totalGames: await Game.countDocuments({ status: 'completed' }),
-        });
+            const totalDepositedResult = await Transaction.aggregate([
+                { $match: { type: 'deposit', status: 'approved' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]);
+            const totalDeposited = totalDepositedResult.length > 0 ? totalDepositedResult[0].total : 0;
+
+            const totalWithdrawnResult = await Transaction.aggregate([
+                { $match: { type: 'withdrawal', status: 'approved' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]);
+            const totalWithdrawn = totalWithdrawnResult.length > 0 ? totalWithdrawnResult[0].total : 0;
+
+            const totalCommissionResult = await Transaction.aggregate([
+                { $match: { type: 'commission' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]);
+            const totalCommission = totalCommissionResult.length > 0 ? totalCommissionResult[0].total : 0;
+
+            const totalTransactedInGamesResult = await Transaction.aggregate([
+                { $match: { type: { $in: ['game_bet', 'game_win'] }, status: 'approved' } },
+                { $group: { _id: null, total: { $sum: '$amount' } } }
+            ]);
+            const totalTransactedInGames = totalTransactedInGamesResult.length > 0 ? totalTransactedInGamesResult[0].total : 0;
+
+
+            res.status(200).json({
+                totalUsers,
+                totalGames,
+                totalDeposited,
+                totalWithdrawn,
+                totalCommission,
+                totalTransactedInGames
+            });
+        } catch (error) {
+            console.error('Erro ao buscar estatísticas do dashboard:', error);
+            res.status(500).json({ message: 'Erro ao buscar estatísticas do dashboard.', error: error.message });
+        }
     },
-    
+
     getPlatformSettings: async (req, res) => {
-        const settings = await getLiveSettings();
-        res.json(settings);
+        try {
+            const settings = await getLiveSettings();
+            res.status(200).json(settings);
+        } catch (error) {
+            res.status(500).json({ message: "Erro ao buscar as configurações da plataforma.", error: error.message });
+        }
     },
-    
+
     updatePlatformSettings: async (req, res) => {
         try {
-            const { platformCommission, minDeposit, minBet, isBonusEnabled, welcomeBonusAmount } = req.body;
-            const updateData = {};
+            const { platformCommission, minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxBet, minBet, passwordResetTokenExpiresIn, platformName, isBonusEnabled, welcomeBonusAmount } = req.body;
 
-            if (platformCommission !== undefined) updateData.platformCommission = platformCommission / 100;
+            // Criar um objeto com os campos que foram realmente fornecidos na requisição
+            const updateData = {};
+            if (platformCommission !== undefined) updateData.platformCommission = platformCommission;
             if (minDeposit !== undefined) updateData.minDeposit = minDeposit;
+            if (maxDeposit !== undefined) updateData.maxDeposit = maxDeposit;
+            if (minWithdrawal !== undefined) updateData.minWithdrawal = minWithdrawal; // AGORA PODE SER ATUALIZADO
+            if (maxWithdrawal !== undefined) updateData.maxWithdrawal = maxWithdrawal;
+            if (maxBet !== undefined) updateData.maxBet = maxBet;
             if (minBet !== undefined) updateData.minBet = minBet;
+            if (passwordResetTokenExpiresIn !== undefined) updateData.passwordResetTokenExpiresIn = passwordResetTokenExpiresIn;
+            if (platformName !== undefined) updateData.platformName = platformName;
             if (isBonusEnabled !== undefined) updateData.isBonusEnabled = isBonusEnabled;
             if (welcomeBonusAmount !== undefined) updateData.welcomeBonusAmount = welcomeBonusAmount;
 
@@ -444,12 +646,12 @@ const controllers = {
              res.status(500).json({ message: "Erro ao atualizar as configurações.", error: error.message });
         }
     },
-    
+
     getPaymentMethodsAdmin: async (req, res) => {
         const settings = await getLiveSettings();
         res.json(settings.paymentMethods);
     },
-    
+
     updatePaymentMethods: async (req, res) => {
         const { methods } = req.body;
         if (!Array.isArray(methods)) {
