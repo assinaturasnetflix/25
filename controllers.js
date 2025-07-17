@@ -19,6 +19,11 @@ async function verifyRecaptcha(token) {
         console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. A verificação será ignorada em ambiente de desenvolvimento.");
         return true;
     }
+    // Se nenhum token for passado (por exemplo, em testes), falhe a validação
+    if (!token) {
+        console.error("Erro: Token do reCAPTCHA não foi fornecido para verificação.");
+        return false;
+    }
     try {
         const response = await axios.post(`https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`);
         return response.data.success;
@@ -31,7 +36,6 @@ async function verifyRecaptcha(token) {
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
-        // Se não houver configurações, crie uma com os padrões do defaultConfig e o singleton
         settings = await Setting.create({ singleton: 'main_settings', ...defaultConfig });
     }
     return settings;
@@ -40,13 +44,15 @@ const getLiveSettings = async () => {
 
 const generateToken = (id, role) => {
     return jwt.sign({ id, role }, process.env.JWT_SECRET, {
-        expiresIn: '1d', // Token expira em 1 dia
+        expiresIn: '1d',
     });
 };
 
 const controllers = {
     registerUser: async (req, res) => {
-        const { username, email, password, recaptchaToken } = req.body;
+        // --- CORREÇÃO APLICADA AQUI ---
+        const { username, email, password } = req.body;
+        const recaptchaToken = req.body['g-recaptcha-response'];
 
         const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
         if (!isRecaptchaValid) {
@@ -58,11 +64,10 @@ const controllers = {
             const user = new User({ username, email, password: hashedPassword });
             await user.save();
 
-            // Adicionar bônus de boas-vindas se ativado
             const settings = await getLiveSettings();
             if (settings.isBonusEnabled && settings.welcomeBonusAmount > 0) {
                 user.bonusBalance += settings.welcomeBonusAmount;
-                await user.save(); // Salvar novamente para incluir o bônus
+                await user.save();
             }
 
             const token = generateToken(user._id, user.role);
@@ -76,7 +81,9 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        const { email, password, recaptchaToken } = req.body;
+        // --- CORREÇÃO APLICADA AQUI ---
+        const { email, password } = req.body;
+        const recaptchaToken = req.body['g-recaptcha-response'];
 
         const isRecaptchaValid = await verifyRecaptcha(recaptchaToken);
         if (!isRecaptchaValid) {
@@ -117,7 +124,7 @@ const controllers = {
             user.passwordResetToken = crypto.createHash('sha256').update(resetToken).digest('hex');
 
             const settings = await getLiveSettings();
-            user.passwordResetExpires = Date.now() + settings.passwordResetTokenExpiresIn * 60 * 1000; // Tempo em minutos
+            user.passwordResetExpires = Date.now() + settings.passwordResetTokenExpiresIn * 60 * 1000;
             await user.save();
 
             await sendPasswordResetEmail(user.email, resetToken);
@@ -250,7 +257,6 @@ const controllers = {
                 return res.status(400).json({ message: 'Método de pagamento inválido ou inativo.' });
             }
 
-            // O comprovante de pagamento é enviado como req.file
             let proofOfPaymentUrl = '';
             if (req.file) {
                 const result = await cloudinary.uploader.upload(req.file.path, {
@@ -290,8 +296,8 @@ const controllers = {
             }
 
             const settings = await getLiveSettings();
-            const minWithdrawal = settings ? settings.minWithdrawal : defaultConfig.minWithdrawal; // Usar valor do DB ou um padrão
-            const maxWithdrawal = settings ? settings.maxWithdrawal : defaultConfig.maxWithdrawal; // Usar valor do DB ou um padrão
+            const minWithdrawal = settings ? settings.minWithdrawal : defaultConfig.minWithdrawal;
+            const maxWithdrawal = settings ? settings.maxWithdrawal : defaultConfig.maxWithdrawal;
 
 
             if (amount < minWithdrawal || amount > maxWithdrawal) {
@@ -307,7 +313,6 @@ const controllers = {
                 return res.status(400).json({ message: 'Método de pagamento inválido ou inativo.' });
             }
 
-            // Subtrai o valor do saldo imediatamente, o status ainda é 'pending'
             user.balance -= amount;
             await user.save();
 
@@ -342,7 +347,7 @@ const controllers = {
         try {
             const games = await Game.find({
                 $or: [{ player1: req.user.id }, { player2: req.user.id }],
-                hiddenBy: { $ne: req.user.id } // Não mostrar jogos que o usuário escondeu
+                hiddenBy: { $ne: req.user.id }
             })
                 .populate('player1', 'username avatar')
                 .populate('player2', 'username avatar')
@@ -364,7 +369,6 @@ const controllers = {
                 return res.status(404).json({ message: 'Jogo não encontrado.' });
             }
 
-            // Verifica se o usuário é participante do jogo
             if (!game.players.includes(userId)) {
                 return res.status(403).json({ message: 'Você não tem permissão para esconder este jogo.' });
             }
@@ -382,7 +386,7 @@ const controllers = {
     },
 
 
-    // --- FUNÇÕES DE ADMIN (ATUALIZADAS / NOVAS) ---
+    // --- FUNÇÕES DE ADMIN ---
 
     getAllUsers: async (req, res) => {
         try {
@@ -411,7 +415,7 @@ const controllers = {
     manualBalanceUpdate: async (req, res) => {
         try {
             const { id } = req.params;
-            const { amount } = req.body; // amount pode ser positivo para adicionar, negativo para remover
+            const { amount } = req.body;
 
             if (typeof amount !== 'number') {
                 return res.status(400).json({ message: 'Valor inválido.' });
@@ -431,11 +435,10 @@ const controllers = {
         }
     },
 
-    // NOVO: Função para o admin editar o saldo de bônus/DEMO de um usuário
     adminUpdateUserBonusBalance: async (req, res) => {
         try {
             const { userId } = req.params;
-            const { bonusBalanceChange, type } = req.body; // bonusBalanceChange: valor a adicionar/remover, type: 'add' ou 'remove'
+            const { bonusBalanceChange, type } = req.body;
 
             if (typeof bonusBalanceChange !== 'number' || bonusBalanceChange <= 0) {
                 return res.status(400).json({ message: 'Valor de alteração de bônus inválido.' });
@@ -467,7 +470,6 @@ const controllers = {
         }
     },
 
-    // NOVO: Função para o admin ver o histórico completo de um usuário
     adminGetUserHistory: async (req, res) => {
         try {
             const { userId } = req.params;
@@ -477,15 +479,13 @@ const controllers = {
                 return res.status(404).json({ message: 'Usuário não encontrado.' });
             }
 
-            // Buscar transações do usuário
             const transactions = await Transaction.find({ user: userId }).sort({ createdAt: -1 });
 
-            // Buscar jogos do usuário (como player1 ou player2)
             const games = await Game.find({
                 $or: [{ player1: userId }, { player2: userId }]
             }).sort({ createdAt: -1 })
-              .populate('player1', 'username avatar') // Popula o nome de usuário e avatar do player1
-              .populate('player2', 'username avatar'); // Popula o nome de usuário e avatar do player2
+              .populate('player1', 'username avatar')
+              .populate('player2', 'username avatar');
 
             res.status(200).json({
                 user: {
@@ -493,7 +493,7 @@ const controllers = {
                     username: user.username,
                     email: user.email,
                     balance: user.balance,
-                    bonusBalance: user.bonusBalance, // Incluir saldo de bônus
+                    bonusBalance: user.bonusBalance,
                     isBlocked: user.isBlocked,
                     role: user.role,
                     createdAt: user.createdAt,
@@ -512,7 +512,7 @@ const controllers = {
     getAllTransactions: async (req, res) => {
         try {
             const transactions = await Transaction.find({})
-                .populate('user', 'username email') // Popula informações do usuário
+                .populate('user', 'username email')
                 .sort({ createdAt: -1 });
             res.status(200).json(transactions);
         } catch (error) {
@@ -522,7 +522,7 @@ const controllers = {
 
     processTransaction: async (req, res) => {
         const { id } = req.params;
-        const { status } = req.body; // 'approved' ou 'rejected'
+        const { status } = req.body;
 
         try {
             const transaction = await Transaction.findById(id);
@@ -544,17 +544,12 @@ const controllers = {
             if (status === 'approved') {
                 if (transaction.type === 'deposit') {
                     user.balance += transaction.amount;
-                } else if (transaction.type === 'withdrawal') {
-                    // O valor já foi deduzido no momento da solicitação de levantamento.
-                    // Se aprovado, não precisa de mais ação no saldo.
-                    // Se fosse rejeitado, o saldo deveria ser reembolsado.
                 }
                 await user.save();
                 await transaction.save();
                 res.status(200).json({ message: 'Transação aprovada com sucesso!', transaction });
             } else if (status === 'rejected') {
                 if (transaction.type === 'withdrawal') {
-                    // Se for um levantamento e for rejeitado, devolve o dinheiro ao saldo do usuário
                     user.balance += transaction.amount;
                 }
                 await user.save();
@@ -626,12 +621,11 @@ const controllers = {
         try {
             const { platformCommission, minDeposit, maxDeposit, minWithdrawal, maxWithdrawal, maxBet, minBet, passwordResetTokenExpiresIn, platformName, isBonusEnabled, welcomeBonusAmount } = req.body;
 
-            // Criar um objeto com os campos que foram realmente fornecidos na requisição
             const updateData = {};
             if (platformCommission !== undefined) updateData.platformCommission = platformCommission;
             if (minDeposit !== undefined) updateData.minDeposit = minDeposit;
             if (maxDeposit !== undefined) updateData.maxDeposit = maxDeposit;
-            if (minWithdrawal !== undefined) updateData.minWithdrawal = minWithdrawal; // AGORA PODE SER ATUALIZADO
+            if (minWithdrawal !== undefined) updateData.minWithdrawal = minWithdrawal;
             if (maxWithdrawal !== undefined) updateData.maxWithdrawal = maxWithdrawal;
             if (maxBet !== undefined) updateData.maxBet = maxBet;
             if (minBet !== undefined) updateData.minBet = minBet;
