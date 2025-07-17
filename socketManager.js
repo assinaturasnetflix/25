@@ -1,5 +1,5 @@
 // =========================================================================
-// FICHEIRO: socketManager.js (VERSÃO FINAL COM LÓGICA DE "PRONTO")
+// FICHEIRO: socketManager.js (VERSÃO CORRIGIDA COM LÓGICA ATÓMICA)
 // =========================================================================
 
 const { User, Game, Setting } = require('./models');
@@ -13,10 +13,12 @@ async function handleUserDisconnection(io, userId) {
     // SÓ ABANDONA O JOGO SE ESTIVER 'in_progress'
     const timer = setTimeout(async () => {
         try {
+            // Apenas precisamos de verificar se existe um jogo ativo.
+            // A lógica de finalização foi movida para a função endGame para ser atómica.
             const activeGame = await Game.findOne({ players: userId, status: 'in_progress' });
             if (activeGame) {
                 const winnerId = activeGame.players.find(p => p.toString() !== userId).toString();
-                console.log(`[Abandono] Jogo ${activeGame.gameId} abandonado por ${userId}. Vencedor: ${winnerId}`);
+                console.log(`[Abandono] Jogo ${activeGame.gameId} será processado como abandonado por ${userId}. Vencedor: ${winnerId}`);
                 await endGame(io, activeGame.gameId, { winnerId, loserId: userId, reason: 'abandonment' });
             }
             disconnectionTimers.delete(userId);
@@ -29,43 +31,85 @@ async function handleUserDisconnection(io, userId) {
     console.log(`[Timer Desconexão] Timer de 15s iniciado para utilizador ${userId}.`);
 }
 
+/**
+ * Função atómica e segura para finalizar um jogo.
+ * Previne condições de corrida ao usar findOneAndUpdate para garantir que o jogo
+ * seja processado apenas uma vez.
+ * @param {object} io - Instância do Socket.IO
+ * @param {string} gameId - ID do jogo a ser finalizado
+ * @param {object} result - Objeto com os detalhes do resultado (winnerId, loserId, reason, isDraw)
+ */
 async function endGame(io, gameId, result) {
     const session = await mongoose.startSession();
     session.startTransaction();
     try {
-        const game = await Game.findOne({ gameId: gameId }).session(session);
-        if (!game || ['completed', 'abandoned'].includes(game.status)) {
-            await session.abortTransaction(); session.endSession(); return;
-        }
         const { winnerId, loserId, reason, isDraw } = result;
-        game.status = reason === 'abandonment' ? 'abandoned' : 'completed';
+
+        // ETAPA 1: Operação atómica para encontrar e atualizar o jogo.
+        // Isto "bloqueia" o jogo, garantindo que nenhuma outra chamada a endGame o processe.
+        const game = await Game.findOneAndUpdate(
+            { gameId: gameId, status: 'in_progress' }, // CONDIÇÃO: Encontrar o jogo APENAS se estiver em andamento.
+            {
+                $set: {
+                    status: reason === 'abandonment' ? 'abandoned' : 'completed',
+                    winner: isDraw ? null : winnerId
+                }
+            },
+            { new: true, session: session } // OPÇÕES: Retornar o documento atualizado e usar a sessão da transação.
+        );
+
+        // ETAPA 2: Verificar se a operação atómica teve sucesso.
+        // Se 'game' for nulo, significa que o jogo não estava 'in_progress' (provavelmente já foi finalizado por outra chamada).
+        if (!game) {
+            console.log(`[EndGame Race Condition] Tentativa de finalizar o jogo ${gameId} que já não está 'in_progress'. Operação abortada.`);
+            await session.abortTransaction();
+            session.endSession();
+            return;
+        }
+
+        // ETAPA 3: Se chegamos aqui, esta é a única thread a processar o fim do jogo. Prosseguimos com segurança.
         if (!isDraw) {
             const winner = await User.findById(winnerId).session(session);
             const loser = await User.findById(loserId).session(session);
             if (winner && loser) {
-                game.winner = winner._id;
-                winner.stats.wins += 1; loser.stats.losses += 1;
-                const settings = await Setting.findOne({ singleton: 'main_settings' }).session(session);
+                winner.stats.wins += 1;
+                loser.stats.losses += 1;
+                
+                const settings = await Setting.findOne({ singleton: 'main_settings' }).lean().session(session);
                 const totalPot = game.betAmount * 2;
-                game.commissionAmount = totalPot * (settings.platformCommission || 0.15);
-                const winnerPrize = totalPot - game.commissionAmount;
+                const commission = totalPot * (settings.platformCommission || 0.15);
+                const winnerPrize = totalPot - commission;
+                
+                game.commissionAmount = commission;
+
                 if (game.bettingMode === 'real') winner.balance += winnerPrize;
                 else winner.bonusBalance += winnerPrize;
-                await winner.save({ session }); await loser.save({ session });
+                
+                await winner.save({ session });
+                await loser.save({ session });
             }
         } else {
-             const [p1, p2] = await Promise.all([User.findById(game.players[0]).session(session), User.findById(game.players[1]).session(session)]);
+             // Lógica de empate: devolver o valor da aposta a ambos
+             const [p1, p2] = await Promise.all([
+                 User.findById(game.players[0]).session(session),
+                 User.findById(game.players[1]).session(session)
+             ]);
              if(p1 && p2) {
                 if (game.bettingMode === 'real') { p1.balance += game.betAmount; p2.balance += game.betAmount; }
                 else { p1.bonusBalance += game.betAmount; p2.bonusBalance += game.betAmount; }
                 await p1.save({ session }); await p2.save({ session });
              }
-             game.winner = null;
         }
+        
+        // Salva o estado final do jogo, incluindo a comissão.
         await game.save({ session });
+        
         await session.commitTransaction();
-        const finalGame = await Game.findOne({ gameId: gameId }).populate('winner', 'username avatar').populate('players', 'username avatar');
+        
+        // Emite o evento de fim de jogo para os clientes
+        const finalGame = await Game.findById(game._id).populate('winner', 'username avatar').populate('players', 'username avatar');
         io.to(game.gameId).emit('game_over', { game: finalGame, reason });
+
     } catch (error) {
         await session.abortTransaction();
         console.error(`[Erro Fim de Jogo] Erro CRÍTICO ao finalizar o jogo ${gameId}:`, error);
@@ -74,6 +118,7 @@ async function endGame(io, gameId, result) {
         session.endSession();
     }
 }
+
 
 const emitLobbyUpdate = async (io) => {
     try {
@@ -131,15 +176,12 @@ module.exports = function(io) {
         socket.on('player_ready', async ({ gameId }) => {
             try {
                 const game = await Game.findOne({ gameId });
-                // Garante que o jogador pertence ao jogo e o jogo ainda está à espera
                 if (!game || !game.players.map(p => p.toString()).includes(userId) || game.status !== 'waiting') return;
                 
-                // Adiciona o jogador à lista de prontos se ainda não estiver lá
                 if (!game.ready.includes(userId)) {
                     game.ready.push(userId);
                 }
                 
-                // Se ambos os jogadores estiverem na sala e ambos estiverem prontos, inicia o jogo
                 if (game.players.length === 2 && game.ready.length === 2) {
                     game.status = 'in_progress';
                     console.log(`[Início Confirmado] Jogo ${game.gameId} iniciado após ambos os jogadores confirmarem.`);
@@ -176,12 +218,6 @@ module.exports = function(io) {
                 emitLobbyUpdate(io);
             } catch (error) {
                 await session.abortTransaction();
-                const userToRefund = await User.findById(userId);
-                if (userToRefund) {
-                     const balanceField = userToRefund.activeBettingMode === 'bonus' ? 'bonusBalance' : 'balance';
-                     userToRefund[balanceField] += betAmount;
-                     await userToRefund.save();
-                }
                 socket.emit('error_message', { message: error.message || 'Erro ao criar a partida.' });
             } finally {
                 session.endSession();
@@ -192,7 +228,6 @@ module.exports = function(io) {
             const session = await mongoose.startSession();
             session.startTransaction();
             try {
-                // NÃO muda o status para 'in_progress' aqui. Só adiciona o jogador.
                 const game = await Game.findOne({ $or: [{ gameId: gameCodeOrId }, { gameCode: gameCodeOrId.toUpperCase() }], status: 'waiting' }).session(session);
                 if (!game) throw new Error('Partida não encontrada, expirada ou já iniciada.');
                 if (game.players.includes(userId)) throw new Error('Não pode entrar na sua própria partida.');
@@ -201,11 +236,11 @@ module.exports = function(io) {
                 if (joiner[balanceField] < game.betAmount) throw new Error('Saldo insuficiente para entrar nesta partida.');
                 joiner[balanceField] -= game.betAmount;
                 game.players.push(joiner._id);
-                game.currentPlayer = game.players[0]; // Define o primeiro jogador
+                game.currentPlayer = game.players[0];
                 await joiner.save({ session });
                 await game.save({ session });
                 await session.commitTransaction();
-                const populatedGame = await Game.findById(game._id);
+                const populatedGame = await Game.findById(game._id).populate('players', 'username avatar');
                 const creatorId = populatedGame.players[0]._id.toString();
                 const joinerId = populatedGame.players[1]._id.toString();
                 console.log(`[Join] Jogador ${joinerId} entrou no jogo ${game.gameId}. Notificando ambos para irem para a sala de espera.`);
