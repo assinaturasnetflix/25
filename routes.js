@@ -60,14 +60,23 @@ const admin = (req, res, next) => {
     }
 };
 
-// Rotas de Autenticação e Usuário
+// --- ROTAS DE USUÁRIO E AUTENTICAÇÃO ---
 router.post('/register', controllers.registerUser);
 router.post('/login', controllers.loginUser);
 router.post('/forgot-password', controllers.forgotPassword);
 router.post('/reset-password', controllers.resetPassword);
-router.get('/profile', protect, controllers.getProfile);
-router.put('/profile', protect, controllers.updateProfile);
-router.post('/profile/avatar', protect, upload.single('avatar'), controllers.uploadAvatar);
+
+// --- ROTAS DE PERFIL (PROTEGIDAS) ---
+// ATUALIZADO: Rota /profile alterada para /users/me para corresponder ao frontend
+router.get('/users/me', protect, controllers.getProfile); 
+router.put('/users/profile', protect, controllers.updateProfile); // AGORA TAMBÉM ATUALIZA A 'bio'
+router.post('/users/avatar', protect, upload.single('avatar'), controllers.uploadAvatar);
+// NOVO: Rota para alterar a senha
+router.put('/users/password', protect, controllers.changePassword); 
+// NOVO: Rota para ver o perfil público de outro jogador (deve ser a última rota com /users/ para não conflitar)
+router.get('/users/profile/:id', controllers.getPublicProfile); 
+
+// --- ROTAS DE TRANSAÇÕES, JOGOS, ETC. (PROTEGIDAS) ---
 router.get('/ranking', protect, controllers.getRanking);
 router.get('/payment-methods', protect, controllers.getPublicPaymentMethods);
 router.post('/transactions/deposit', protect, upload.single('proof'), controllers.createDeposit);
@@ -77,20 +86,17 @@ router.get('/games/me', protect, controllers.getMyGames);
 router.delete('/games/me/:id', protect, controllers.hideGameFromHistory);
 
 
-// Rotas de Administrador (precisam de token de admin)
+// --- ROTAS DE ADMINISTRADOR ---
 router.get('/admin/users', protect, admin, controllers.getAllUsers);
 router.put('/admin/users/:id/toggle-block', protect, admin, controllers.toggleBlockUser);
 router.put('/admin/users/:id/balance', protect, admin, controllers.manualBalanceUpdate);
-
-// NOVAS ROTAS DE ADMIN
-router.patch('/admin/users/:userId/bonus-balance', protect, admin, controllers.adminUpdateUserBonusBalance); // NOVO: Editar saldo de bônus
-router.get('/admin/users/:userId/history', protect, admin, controllers.adminGetUserHistory); // NOVO: Ver histórico de usuário
-
+router.patch('/admin/users/:userId/bonus-balance', protect, admin, controllers.adminUpdateUserBonusBalance);
+router.get('/admin/users/:userId/history', protect, admin, controllers.adminGetUserHistory);
 router.get('/admin/transactions', protect, admin, controllers.getAllTransactions);
 router.put('/admin/transactions/:id/process', protect, admin, controllers.processTransaction);
 router.get('/admin/stats', protect, admin, controllers.getDashboardStats);
 router.get('/admin/settings', protect, admin, controllers.getPlatformSettings);
-router.put('/admin/settings', protect, admin, controllers.updatePlatformSettings); // AGORA PODE ATUALIZAR minWithdrawal
+router.put('/admin/settings', protect, admin, controllers.updatePlatformSettings);
 router.get('/admin/payment-methods', protect, admin, controllers.getPaymentMethodsAdmin);
 router.put('/admin/payment-methods', protect, admin, controllers.updatePaymentMethods);
 

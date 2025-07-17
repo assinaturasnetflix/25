@@ -16,12 +16,10 @@ cloudinary.config({
 async function verifyRecaptcha(token) {
     const secretKey = process.env.RECAPTCHA_SECRET_KEY;
     if (!secretKey) {
-        console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. A verificação será ignorada em ambiente de desenvolvimento.");
+        console.warn("Aviso: RECAPTCHA_SECRET_KEY não definida. A verificação será ignorada.");
         return true;
     }
-    // Se nenhum token for passado (por exemplo, em testes), falhe a validação
     if (!token) {
-        console.error("Erro: Token do reCAPTCHA não foi fornecido para verificação.");
         return false;
     }
     try {
@@ -50,7 +48,6 @@ const generateToken = (id, role) => {
 
 const controllers = {
     registerUser: async (req, res) => {
-        // --- CORREÇÃO APLICADA AQUI ---
         const { username, email, password } = req.body;
         const recaptchaToken = req.body['g-recaptcha-response'];
 
@@ -81,7 +78,6 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        // --- CORREÇÃO APLICADA AQUI ---
         const { email, password } = req.body;
         const recaptchaToken = req.body['g-recaptcha-response'];
 
@@ -106,7 +102,7 @@ const controllers = {
             }
 
             const token = generateToken(user._id, user.role);
-            res.status(200).json({ message: 'Login bem-sucedido!', token, _id: user._id, username: user.username, email: user.email, role: user.role });
+            res.status(200).json({ message: 'Login bem-sucedido!', token, _id: user._id, username: user.username, email: user.email, role: user.role, avatar: user.avatar });
         } catch (error) {
             res.status(500).json({ message: 'Erro ao fazer login.', error: error.message });
         }
@@ -171,8 +167,23 @@ const controllers = {
         }
     },
 
+    // NOVO: Função para obter um perfil público
+    getPublicProfile: async (req, res) => {
+        try {
+            const user = await User.findById(req.params.id)
+                .select('username avatar bio stats createdAt'); // Seleciona apenas campos públicos
+            if (!user) {
+                return res.status(404).json({ message: 'Jogador não encontrado.' });
+            }
+            res.status(200).json(user);
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao buscar perfil do jogador.', error: error.message });
+        }
+    },
+
+    // ATUALIZADO: Agora suporta a atualização da biografia
     updateProfile: async (req, res) => {
-        const { username, email } = req.body;
+        const { username, email, bio } = req.body;
         try {
             const user = await User.findById(req.user.id);
             if (!user) {
@@ -181,6 +192,9 @@ const controllers = {
 
             user.username = username || user.username;
             user.email = email || user.email;
+            if (bio !== undefined) {
+                user.bio = bio;
+            }
 
             await user.save();
             res.status(200).json({ message: 'Perfil atualizado com sucesso!', user: user });
@@ -189,6 +203,29 @@ const controllers = {
                 return res.status(400).json({ message: 'Nome de usuário ou e-mail já existe.' });
             }
             res.status(500).json({ message: 'Erro ao atualizar perfil.', error: error.message });
+        }
+    },
+
+    // NOVO: Função para alterar a senha do usuário logado
+    changePassword: async (req, res) => {
+        const { oldPassword, newPassword } = req.body;
+        try {
+            const user = await User.findById(req.user.id).select('+password');
+            if (!user) {
+                return res.status(404).json({ message: 'Usuário não encontrado.' });
+            }
+
+            const isMatch = await bcrypt.compare(oldPassword, user.password);
+            if (!isMatch) {
+                return res.status(400).json({ message: 'Senha antiga incorreta.' });
+            }
+
+            user.password = await bcrypt.hash(newPassword, 10);
+            await user.save();
+            
+            res.status(200).json({ message: 'Senha alterada com sucesso!' });
+        } catch (error) {
+            res.status(500).json({ message: 'Erro ao alterar a senha.', error: error.message });
         }
     },
 
@@ -243,7 +280,7 @@ const controllers = {
     },
 
     createDeposit: async (req, res) => {
-        const { amount, paymentMethodId, transactionId } = req.body;
+        const { amount, paymentMethodId, transactionId, proofText } = req.body;
         const userId = req.user.id;
 
         try {
@@ -265,6 +302,10 @@ const controllers = {
                     fetch_format: 'auto'
                 });
                 proofOfPaymentUrl = result.secure_url;
+            } else if (proofText) {
+                proofOfPaymentUrl = `text_proof:${proofText}`;
+            } else {
+                return res.status(400).json({ message: 'Comprovativo de pagamento é obrigatório.' });
             }
 
             const transaction = new Transaction({
@@ -286,7 +327,7 @@ const controllers = {
     },
 
     createWithdrawal: async (req, res) => {
-        const { amount, paymentMethodId, recipientAccount, recipientName } = req.body;
+        const { amount, paymentMethodId, recipientAccount, recipientName, holderName, phoneNumber } = req.body;
         const userId = req.user.id;
 
         try {
@@ -322,8 +363,8 @@ const controllers = {
                 amount: amount,
                 status: 'pending',
                 paymentMethod: paymentMethod.name,
-                recipientAccount,
-                recipientName
+                recipientAccount: recipientAccount || phoneNumber,
+                recipientName: recipientName || holderName
             });
             await transaction.save();
 

@@ -7,7 +7,7 @@ const settingSchema = new mongoose.Schema({
     platformCommission: { type: Number, default: 0.15, min: 0, max: 1 },
     minDeposit: { type: Number, default: 50.00 },
     maxDeposit: { type: Number, default: 10000.00 },
-    minWithdrawal: { type: Number, default: 50.00 }, // Certifique-se que este campo existe e tem um valor padrão
+    minWithdrawal: { type: Number, default: 50.00 },
     maxWithdrawal: { type: Number, default: 10000.00 },
     maxBet: { type: Number, default: 5000.00 },
     minBet: { type: Number, default: 10.00 },
@@ -23,48 +23,56 @@ const settingSchema = new mongoose.Schema({
     }]
 });
 
+// --- ATUALIZAÇÃO APLICADA AQUI ---
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true, trim: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     balance: { type: Number, default: 0 },
-    bonusBalance: { type: Number, default: 0 }, // NOVO CAMPO: Saldo de Bônus/DEMO
+    bonusBalance: { type: Number, default: 0 },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     isBlocked: { type: Boolean, default: false },
     avatar: { type: String, default: '' },
     passwordResetToken: String,
     passwordResetExpires: Date,
+    // --- NOVOS CAMPOS ADICIONADOS ---
+    bio: { type: String, maxlength: 150, default: '' },
+    stats: {
+        wins: { type: Number, default: 0 },
+        losses: { type: Number, default: 0 },
+    },
+    activeBettingMode: { type: String, enum: ['real', 'bonus'], default: 'real' }
 }, { timestamps: true });
 
 const transactionSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    type: { type: String, enum: ['deposit', 'withdrawal', 'game_bet', 'game_win', 'commission'], required: true },
+    type: { type: String, enum: ['deposit', 'withdrawal', 'game_bet', 'game_win', 'commission', 'game_bet_refund'], required: true },
     amount: { type: Number, required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    paymentMethod: { type: String }, // Nome do método de pagamento
-    transactionId: { type: String }, // ID da transação da operadora (ex: M-Pesa, e-Mola)
-    proofOfPayment: { type: String }, // URL do comprovativo de pagamento (para depósitos)
-    recipientAccount: { type: String }, // Conta para onde o dinheiro foi enviado (para levantamentos)
-    recipientName: { type: String }, // Nome do titular da conta (para levantamentos)
-    game: { type: mongoose.Schema.Types.ObjectId, ref: 'Game' }, // Se a transação for de um jogo
-    relatedUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Para comissões ou transferências entre usuários
+    paymentMethod: { type: String },
+    transactionId: { type: String },
+    proofOfPayment: { type: String },
+    recipientAccount: { type: String },
+    recipientName: { type: String },
+    game: { type: mongoose.Schema.Types.ObjectId, ref: 'Game' },
+    relatedUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 
 const gameSchema = new mongoose.Schema({
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     player1: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     player2: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    turn: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // ID do jogador atual
+    turn: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     boardState: { type: [[String]], required: true },
     status: { type: String, enum: ['pending', 'in_progress', 'completed', 'abandoned', 'cancelled'], default: 'pending' },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     betAmount: { type: Number, required: true },
     commissionAmount: { type: Number, default: 0 },
-    bettingMode: { type: String, enum: ['real', 'bonus'], required: true }, // 'real' ou 'bonus'
+    bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     isPrivate: { type: Boolean, default: false },
-    gameCode: { type: String, unique: true, sparse: true }, // Código para jogos privados
+    gameCode: { type: String, unique: true, sparse: true },
     lobbyDescription: { type: String, maxlength: 100 },
-    timeLimit: { type: Number, default: null }, // Limite de tempo por jogada em segundos
+    timeLimit: { type: Number, default: null },
     moveHistory: [{
         player: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         from: { r: Number, c: Number },
@@ -72,8 +80,8 @@ const gameSchema = new mongoose.Schema({
         captured: [{ r: Number, c: Number }],
         timestamp: { type: Date, default: Date.now }
     }],
-    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], // Jogadores que confirmaram estar prontos
-    hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }] // Usuários que esconderam o jogo do histórico
+    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
 
