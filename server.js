@@ -6,13 +6,12 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const routes = require('./routes');
 const socketManager = require('./socketManager');
-const webpush = require('web-push'); // --- 1. IMPORTAR A BIBLIOTECA ---
+const webpush = require('web-push');
 
 const app = express();
 const server = http.createServer(app);
 
-// --- 2. CONFIGURAR AS CHAVES VAPID ---
-// Certifique-se de que as chaves VAPID estão no seu arquivo .env
+// --- CONFIGURAR AS CHAVES VAPID ---
 const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
 const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
 
@@ -26,8 +25,6 @@ if (!vapidPublicKey || !vapidPrivateKey) {
     );
     console.log("Configuração VAPID para notificações push carregada.");
 }
-// --- FIM DA CONFIGURAÇÃO VAPID ---
-
 
 // --- INÍCIO DA ATUALIZAÇÃO DE CORS (EQUILÍBRIO FINAL) ---
 
@@ -56,7 +53,7 @@ const corsOptions = {
 
 
 const io = new Server(server, {
-    cors: corsOptions, // Aplica as mesmas regras de CORS ao WebSocket
+    cors: corsOptions,
     connectionStateRecovery: {
         maxDisconnectionDuration: 2 * 60 * 1000,
         skipMiddlewares: true,
@@ -64,7 +61,7 @@ const io = new Server(server, {
 });
 
 // --- MIDDLEWARE ---
-app.use(cors(corsOptions)); // Usa as opções de CORS atualizadas
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -75,6 +72,7 @@ app.get("/", (req, res) => {
 
 // --- ROTAS DA API ---
 app.use('/api', routes);
+console.log(">>> O arquivo de rotas foi carregado com sucesso. Versão: 1.0 <<<"); // <-- LINHA DE DEBUG ADICIONADA
 
 // Conexão com o MongoDB
 const MONGO_URI = process.env.MONGO_URI;
