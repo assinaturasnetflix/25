@@ -1,12 +1,10 @@
-const { Game, User, Setting, Transaction } = require('./models');
+const { Game, User, Setting } = require('./models');
 const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition } = require('./gameLogic');
 const mongoose = require('mongoose');
-const crypto = require('crypto');
 
-let activeUsers = {}; // userId -> socket.id
-let activeLobbies = {}; // gameId -> { data: { ... }, createdAt, createdBy }
+let activeUsers = {};
+let activeLobbies = {};
 
-// Helper para obter as configurações em tempo real
 const getLiveSettings = async () => {
     let settings = await Setting.findOne({ singleton: 'main_settings' });
     if (!settings) {
@@ -15,270 +13,324 @@ const getLiveSettings = async () => {
     return settings;
 };
 
-// Lógica de manipulação do fim do jogo (Refatorada e Aprimorada)
-const handleGameOver = async (io, game, winnerId, loserId, surrendered = false) => {
-    try {
-        // Previne que um jogo já finalizado seja processado novamente
-        if (game.status === 'completed' || game.status === 'cancelled') return;
-
-        const winner = await User.findById(winnerId);
-        const loser = await User.findById(loserId);
-        const settings = await getLiveSettings();
-
-        // Atualiza estatísticas de vitória/derrota
-        if (winner) winner.stats.wins += 1;
-        if (loser) loser.stats.losses += 1;
-
-        // Processa o prêmio da aposta
-        if (game.betAmount > 0) {
-            const totalPrize = game.betAmount * 2;
-            const platformCommission = totalPrize * settings.platformCommission;
-            const winnerGets = totalPrize - platformCommission;
-            
-            if (winner) {
-                if (game.bettingMode === 'real') {
-                    winner.balance += winnerGets;
-                } else {
-                    winner.bonusBalance += winnerGets;
-                }
-            }
-            game.commissionAmount = platformCommission;
-        }
-        
-        game.status = 'completed';
-        game.winner = winnerId;
-        
-        // Salva todas as alterações no banco de dados
-        await game.save();
-        if (winner) await winner.save();
-        if (loser) await loser.save();
-
-        // Remove o jogo do lobby ativo
-        if (activeLobbies[game.id]) {
-            delete activeLobbies[game.id];
-            io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
-        }
-
-        // Emite o evento de fim de jogo para os clientes
-        io.to(game.id).emit('game_over', {
-            winner: winner ? winner.toObject() : null,
-            loser: loser ? loser.toObject() : null,
-            surrendered: surrendered,
-            prize: game.betAmount > 0 ? (game.betAmount * 2) - game.commissionAmount : 0,
-            moves: game.moveHistory.length,
-            piecesCaptured: game.moveHistory.reduce((acc, move) => acc + (move.captured ? move.captured.length : 0), 0)
-        });
-
-        // Força todos os sockets a saírem da sala do jogo
-        io.socketsLeave(game.id);
-    } catch (error) {
-        console.error('Erro em handleGameOver:', error);
-        io.to(game.id).emit('error_message', { message: 'Erro interno ao finalizar o jogo.' });
-    }
-};
-
-
 const socketManager = (io) => {
     io.on('connection', (socket) => {
         const userId = socket.handshake.query.userId;
         if (userId) {
             activeUsers[userId] = socket.id;
             socket.join(userId);
-            console.log(`Usuário ${userId} conectado.`);
         }
+        
+        socket.on('join_game_room', async ({ gameId }) => {
+            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            if (!userId) return;
+            const game = await Game.findById(gameId).populate('players', 'username avatar');
+            if (!game) return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada.' });
+            socket.join(gameId);
+            io.to(socket.id).emit('game_state', game);
+        });
 
-        // --- NOVOS EVENTOS DE SOCKET ADICIONADOS ---
+        socket.on('get_lobby', () => {
+             io.to(socket.id).emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+        });
 
         socket.on('set_betting_mode', async ({ mode }) => {
-            const currentUserId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!currentUserId || !['real', 'bonus'].includes(mode)) return;
+            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            if (!userId || !['real', 'bonus'].includes(mode)) return;
+            
             try {
-                await User.findByIdAndUpdate(currentUserId, { activeBettingMode: mode });
-                socket.emit('mode_changed_success', { newMode: mode });
-            } catch (error) {
-                socket.emit('error_message', { message: 'Erro ao alterar a carteira.' });
-            }
-        });
-
-        socket.on('cancel_game', async ({ gameId }) => {
-            const currentUserId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!currentUserId) return;
-            try {
-                const game = await Game.findById(gameId);
-                if (game && game.status === 'pending' && game.player1.equals(currentUserId)) {
-                    const user = await User.findById(currentUserId);
-                    if (user) {
-                        if (game.bettingMode === 'real') user.balance += game.betAmount;
-                        else user.bonusBalance += game.betAmount;
-                        await user.save();
-                    }
-                    game.status = 'cancelled';
-                    await game.save();
-                    delete activeLobbies[gameId];
-                    io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
-                    socket.emit('game_cancelled', { message: 'Sua partida foi cancelada.' });
+                const user = await User.findById(userId);
+                if (user) {
+                    user.activeBettingMode = mode;
+                    await user.save();
+                    io.to(socket.id).emit('mode_changed_success', { newMode: mode });
                 }
             } catch (error) {
-                socket.emit('error_message', { message: 'Erro ao cancelar a partida.' });
+                io.to(socket.id).emit('error_message', { message: 'Erro ao alterar o modo de aposta.' });
             }
-        });
-
-        // --- EVENTOS EXISTENTES (COM MELHORIAS) ---
-
-        socket.on('get_lobby', async () => {
-            const gamesInDb = await Game.find({ status: 'pending' }).sort({ createdAt: -1 }).populate('creator', 'username avatar');
-            activeLobbies = {};
-            gamesInDb.forEach(game => {
-                activeLobbies[game._id.toString()] = { data: game, createdAt: game.createdAt };
-            });
-            io.to(socket.id).emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
         });
 
         socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
-            const player1Id = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!player1Id) return socket.emit('error_message', { message: 'Usuário não autenticado.' });
+            const creatorId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            const creator = await User.findById(creatorId);
+            const settings = await getLiveSettings();
 
-            try {
-                const user = await User.findById(player1Id);
-                const settings = await getLiveSettings();
-
-                if (betAmount < settings.minBet || betAmount > settings.maxBet) {
-                    return socket.emit('error_message', { message: `A aposta deve ser entre ${settings.minBet} e ${settings.maxBet} MT.` });
-                }
-
-                // Usa a carteira ativa do usuário como fonte da verdade
-                const bettingMode = user.activeBettingMode;
-                const balanceToCheck = bettingMode === 'real' ? user.balance : user.bonusBalance;
-                
-                if (balanceToCheck < betAmount) {
-                    return socket.emit('error_message', { message: `Saldo ${bettingMode} insuficiente.` });
-                }
-
-                if (bettingMode === 'real') user.balance -= betAmount;
-                else user.bonusBalance -= betAmount;
-                await user.save();
-
-                const gameCode = isPrivate ? crypto.randomBytes(3).toString('hex').toUpperCase() : undefined;
-
-                const game = new Game({
-                    players: [player1Id],
-                    player1: player1Id,
-                    boardState: createInitialBoard(),
-                    status: 'pending',
-                    betAmount,
-                    bettingMode,
-                    isPrivate,
-                    gameCode,
-                    lobbyDescription: description || ''
-                });
-                await game.save();
-
-                activeLobbies[game._id.toString()] = { data: game.toObject(), createdAt: new Date(), createdBy: player1Id };
-                io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
-                
-                if (isPrivate) {
-                    socket.emit('private_game_created_show_code', { privateCode: game.gameCode });
-                }
-
-            } catch (error) {
-                socket.emit('error_message', { message: 'Erro ao criar jogo.' });
+            const activeBalance = creator.activeBettingMode === 'real' ? creator.balance : creator.bonusBalance;
+            if (!creator || activeBalance < betAmount) {
+                return io.to(socket.id).emit('error_message', { message: `Saldo insuficiente na sua carteira de ${creator.activeBettingMode}.` });
             }
+            if (betAmount < settings.minBet) {
+                return io.to(socket.id).emit('error_message', { message: `A aposta mínima é ${settings.minBet} MT.` });
+            }
+
+            const gameData = {
+                players: [creatorId],
+                boardState: createInitialBoard(),
+                currentPlayer: creatorId,
+                status: 'waiting',
+                betAmount,
+                bettingMode: creator.activeBettingMode,
+                lobbyDescription: description,
+                isPrivate,
+                ready: []
+            };
+
+            if (isPrivate) {
+                gameData.gameCode = `P${Math.random().toString().substring(2, 8)}`;
+            }
+            
+            const game = new Game(gameData);
+            await game.save();
+            
+            if (isPrivate) {
+                io.to(socket.id).emit('private_game_created_show_code', { privateCode: game.gameCode });
+            } else {
+                const lobbyData = {
+                    gameId: game.id,
+                    creator: { _id: creator._id, username: creator.username, avatar: creator.avatar },
+                    betAmount: game.betAmount,
+                    bettingMode: game.bettingMode,
+                    description: game.lobbyDescription,
+                    createdAt: game.createdAt
+                };
+
+                const expiryTimer = setTimeout(async () => {
+                    const gameToExpire = await Game.findById(game.id);
+                    if (gameToExpire && gameToExpire.players.length === 1) {
+                        await Game.findByIdAndDelete(game.id);
+                        delete activeLobbies[game.id.toString()];
+                        io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+                        io.to(socket.id).emit('game_expired', { message: 'A sua partida expirou por falta de oponentes.' });
+                    }
+                }, 120000); 
+
+                activeLobbies[game.id] = { data: lobbyData, expiryTimer };
+                io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+            }
+        });
+        
+        socket.on('cancel_game', async ({ gameId }) => {
+            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            if (!userId) return;
+            const game = await Game.findById(gameId);
+            if (!game || !game.players[0].equals(userId)) return;
+            const lobbyEntry = activeLobbies[gameId];
+            if (lobbyEntry) clearTimeout(lobbyEntry.expiryTimer);
+            await Game.findByIdAndDelete(gameId);
+            delete activeLobbies[gameId];
+            io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+            io.to(socket.id).emit('game_cancelled', { message: 'Partida cancelada com sucesso.' });
         });
 
         socket.on('join_game', async ({ gameCodeOrId }) => {
-            const player2Id = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!player2Id) return socket.emit('error_message', { message: 'Oponente inválido.' });
+            const joinerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            const joiner = await User.findById(joinerId);
             
-            try {
-                // Procura por código (privado) ou por ID (público)
-                const game = await Game.findOne({
-                    $or: [{ _id: mongoose.Types.ObjectId.isValid(gameCodeOrId) ? gameCodeOrId : null }, { gameCode: gameCodeOrId.toUpperCase() }],
-                    status: 'pending'
-                });
-
-                if (!game) return socket.emit('error_message', { message: 'Jogo não encontrado ou já iniciado.' });
-                if (game.player1.equals(player2Id)) return socket.emit('error_message', { message: 'Não pode entrar no seu próprio jogo.' });
-
-                const user2 = await User.findById(player2Id);
-                const balanceToCheck = game.bettingMode === 'real' ? user2.balance : user2.bonusBalance;
-
-                if (balanceToCheck < game.betAmount) return socket.emit('error_message', { message: `Saldo ${game.bettingMode} insuficiente.` });
-                
-                if (game.bettingMode === 'real') user2.balance -= game.betAmount;
-                else user2.bonusBalance -= game.betAmount;
-                await user2.save();
-
-                game.player2 = player2Id;
-                game.players.push(player2Id);
-                game.status = 'in_progress';
-                game.turn = game.player1;
-                await game.save();
-
-                delete activeLobbies[game.id];
-                io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
-
-                const player1SocketId = activeUsers[game.player1.toString()];
-                if (player1SocketId) io.sockets.sockets.get(player1SocketId)?.join(game.id);
-                socket.join(game.id);
-
-                const fullGameData = await Game.findById(game._id).populate('players', 'username avatar');
-                io.to(game.id).emit('game_session_ready', fullGameData);
-
-            } catch (error) {
-                socket.emit('error_message', { message: 'Erro interno ao entrar no jogo.' });
+            let gameToJoin;
+            if (mongoose.Types.ObjectId.isValid(gameCodeOrId)) {
+                gameToJoin = await Game.findById(gameCodeOrId);
+            } else {
+                gameToJoin = await Game.findOne({ gameCode: gameCodeOrId, status: 'waiting' });
             }
-        });
 
-        socket.on('makeMove', async ({ gameId, move }) => {
-            // ... (A lógica de makeMove continua a mesma, mas agora chama handleGameOver)
-            // ...
-            const winState = checkWinCondition(game.boardState, playerColor);
-            if (winState.winner) {
-                await handleGameOver(io, game, playerId, opponent._id);
+            if (!gameToJoin || gameToJoin.status !== 'waiting') return io.to(socket.id).emit('error_message', { message: 'Partida não encontrada ou já iniciada.' });
+            if (gameToJoin.players[0].equals(joinerId)) return io.to(socket.id).emit('error_message', { message: 'Não pode entrar na sua própria partida.' });
+            
+            if (joiner.activeBettingMode !== gameToJoin.bettingMode) {
+                return io.to(socket.id).emit('error_message', { message: `Esta partida requer a carteira de ${gameToJoin.bettingMode}. Por favor, altere a sua carteira ativa.` });
+            }
+
+            const activeBalance = joiner.activeBettingMode === 'real' ? joiner.balance : joiner.bonusBalance;
+            if (activeBalance < gameToJoin.betAmount) {
+                return io.to(socket.id).emit('error_message', { message: 'Saldo insuficiente na sua carteira ativa.' });
+            }
+
+            const lobbyEntry = activeLobbies[gameToJoin.id.toString()];
+            if (lobbyEntry) clearTimeout(lobbyEntry.expiryTimer);
+
+            gameToJoin.players.push(joinerId);
+            await gameToJoin.save();
+            
+            const populatedGame = await Game.findById(gameToJoin.id).populate('players', 'username avatar');
+            const creatorSocketId = activeUsers[gameToJoin.players[0].toString()];
+            if (creatorSocketId) {
+                const creatorSocket = io.sockets.sockets.get(creatorSocketId);
+                if (creatorSocket) creatorSocket.join(populatedGame.id.toString());
+            }
+            socket.join(populatedGame.id.toString());
+
+            if (activeLobbies[populatedGame.id.toString()]) {
+                delete activeLobbies[populatedGame.id.toString()];
+                io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
+            }
+            
+            io.to(populatedGame.id.toString()).emit('game_session_ready', populatedGame);
+        });
+        
+        socket.on('player_ready', async ({ gameId }) => {
+            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            const game = await Game.findById(gameId);
+            if (!game || !userId || game.ready.map(id => id.toString()).includes(userId)) return;
+
+            game.ready.push(new mongoose.Types.ObjectId(userId));
+            
+            if (game.ready.length === 2) {
+                const player1 = await User.findById(game.players[0]);
+                const player2 = await User.findById(game.players[1]);
+
+                if (game.bettingMode === 'real') {
+                    if (player1.balance < game.betAmount || player2.balance < game.betAmount) {
+                         io.to(gameId).emit('error_message', { message: 'Um dos jogadores não tem saldo real suficiente. A partida foi cancelada.' });
+                         await Game.findByIdAndDelete(gameId);
+                         return;
+                    }
+                    player1.balance -= game.betAmount;
+                    player2.balance -= game.betAmount;
+                } else {
+                    if (player1.bonusBalance < game.betAmount || player2.bonusBalance < game.betAmount) {
+                         io.to(gameId).emit('error_message', { message: 'Um dos jogadores não tem saldo de bónus suficiente. A partida foi cancelada.' });
+                         await Game.findByIdAndDelete(gameId);
+                         return;
+                    }
+                    player1.bonusBalance -= game.betAmount;
+                    player2.bonusBalance -= game.betAmount;
+                }
+                
+                await player1.save();
+                await player2.save();
+
+                game.status = 'in_progress';
+                await game.save();
+                io.to(gameId).emit('game_start_countdown');
             } else {
                 await game.save();
-                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.turn, move });
+                io.to(gameId).emit('update_ready_status', { userId });
+            }
+        });
+        
+        const handleGameOver = async (game, winnerId, loserId, surrendered = false) => {
+            const settings = await getLiveSettings();
+            
+            const totalPot = game.betAmount * 2;
+            const commission = totalPot * settings.platformCommission;
+            const prizePool = totalPot - commission;
+            
+            const winnerUser = await User.findById(winnerId);
+            const loserUser = await User.findById(loserId);
+
+            if (game.bettingMode === 'real') {
+                winnerUser.balance += prizePool;
+            } else {
+                winnerUser.bonusBalance += prizePool;
+            }
+            
+            winnerUser.stats.wins += 1;
+            loserUser.stats.losses += 1;
+
+            await winnerUser.save();
+            await loserUser.save();
+
+            game.status = 'completed';
+            game.winner = winnerId;
+            game.commissionAmount = commission;
+            
+            const piecesCaptured = game.moveHistory
+                .filter(m => m.player.equals(winnerId))
+                .reduce((acc, m) => acc + (m.captured ? m.captured.length : 0), 0);
+
+            const finalStats = {
+                winner: winnerUser.toObject(),
+                prize: prizePool,
+                moves: game.moveHistory.length,
+                piecesCaptured,
+                surrendered,
+            };
+
+            await game.save();
+            io.to(game.id).emit('game_over', finalStats);
+        };
+
+        socket.on('get_possible_moves', async ({gameId, from}) => {
+             const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+             const game = await Game.findById(gameId);
+             if(!game || !userId || !game.currentPlayer.equals(userId)) return;
+
+             // --- CORREÇÃO APLICADA AQUI ---
+             const playerIndex = game.players.findIndex(p => p.equals(userId));
+             if (playerIndex === -1) return;
+             const playerSymbol = playerIndex === 0 ? 'b' : 'w';
+
+             const moves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
+             const filteredMoves = moves.filter(m => m.from[0] === from[0] && m.from[1] === from[1]);
+             io.to(socket.id).emit('possible_moves', filteredMoves);
+        });
+
+        socket.on('make_move', async ({ gameId, move }) => {
+            const game = await Game.findById(gameId).populate('players');
+            const playerId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+
+            if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
+            
+            // --- CORREÇÃO APLICADA AQUI ---
+            const playerIndex = game.players.findIndex(p => p._id.equals(playerId));
+            if (playerIndex === -1) return;
+            const playerSymbol = playerIndex === 0 ? 'b' : 'w';
+            
+            const possibleMoves = getPossibleMovesForPlayer(game.boardState, playerSymbol);
+            
+            const isValidMove = possibleMoves.some(pMove => 
+                JSON.stringify(pMove.from) === JSON.stringify(move.from) &&
+                JSON.stringify(pMove.to) === JSON.stringify(move.to)
+            );
+
+            if (!isValidMove) {
+                console.log(`Movimento inválido rejeitado para o jogador ${playerId} no jogo ${gameId}`);
+                return;
+            }
+            
+            const fullMove = possibleMoves.find(pMove => 
+                JSON.stringify(pMove.from) === JSON.stringify(move.from) &&
+                JSON.stringify(pMove.to) === JSON.stringify(move.to)
+            );
+            move.captured = fullMove.captured;
+
+            game.boardState = applyMoveToBoard(game.boardState, move);
+            
+            const opponent = game.players.find(p => !p._id.equals(playerId));
+            game.currentPlayer = opponent._id;
+            game.moveHistory.push({ player: new mongoose.Types.ObjectId(playerId), from: {r: move.from[0], c: move.from[1]}, to: {r: move.to[0], c: move.to[1]}, captured: move.captured });
+            
+            const winState = checkWinCondition(game.boardState, playerSymbol);
+            if (winState.winner) {
+                await handleGameOver(game, playerId, opponent._id);
+            } else {
+                await game.save();
+                io.to(game.id).emit('move_made', { boardState: game.boardState, currentPlayer: game.currentPlayer, move: move });
             }
         });
 
         socket.on('surrender', async ({ gameId }) => {
-            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (!userId) return;
-            try {
-                const game = await Game.findById(gameId);
-                if (!game || !game.players.includes(userId)) return;
+            const game = await Game.findById(gameId).populate('players');
+            const surrendererId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            if (!game || !surrendererId || !['in_progress', 'waiting'].includes(game.status)) return;
 
-                // Se o jogo está em andamento, o outro jogador ganha
-                if (game.status === 'in_progress') {
-                    const winnerId = game.players.find(p => !p.equals(userId));
-                    await handleGameOver(io, game, winnerId, userId, true);
-                }
-            } catch (error) {
-                socket.emit('error_message', { message: 'Erro ao render-se.' });
+            const winner = game.players.find(p => !p._id.equals(surrendererId));
+            if (!winner) return;
+            
+            if (game.status === 'in_progress') {
+                await handleGameOver(game, winner._id, surrendererId, true);
+            } else {
+                game.status = 'abandoned';
+                game.winner = winner._id;
+                await game.save();
+                io.to(game.id).emit('game_over', { surrendered: true, winner: winner.toObject() });
             }
         });
-
-        socket.on('disconnect', async () => {
-            const userIdDisconnected = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
-            if (userIdDisconnected) {
-                console.log(`Usuário ${userIdDisconnected} desconectado.`);
-                delete activeUsers[userIdDisconnected];
-
-                // Lógica de abandono para jogos em andamento
-                try {
-                    const gameInProgress = await Game.findOne({
-                        status: 'in_progress',
-                        players: userIdDisconnected
-                    });
-
-                    if (gameInProgress) {
-                        const winnerId = gameInProgress.players.find(p => !p.equals(userIdDisconnected));
-                        console.log(`Jogo ${gameInProgress._id} abandonado. Vencedor: ${winnerId}`);
-                        await handleGameOver(io, gameInProgress, winnerId, userIdDisconnected, true);
-                    }
-                } catch(error) {
-                    console.error("Erro no handler de disconnect: ", error);
-                }
+        
+        socket.on('disconnect', () => {
+            const userId = Object.keys(activeUsers).find(key => activeUsers[key] === socket.id);
+            if (userId) {
+                delete activeUsers[userId];
             }
         });
     });

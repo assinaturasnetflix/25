@@ -23,52 +23,55 @@ const settingSchema = new mongoose.Schema({
     }]
 });
 
-// --- ATUALIZAÇÃO APLICADA AQUI ---
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true, trim: true },
-    email: { type: String, required: true, unique: true },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     password: { type: String, required: true },
+    avatar: {
+        public_id: { type: String, default: 'default_avatar_id' },
+        url: { type: String, default: 'icon' } 
+    },
+    bio: { type: String, maxlength: 150, default: '' },
     balance: { type: Number, default: 0 },
     bonusBalance: { type: Number, default: 0 },
+    activeBettingMode: { type: String, enum: ['real', 'bonus'], default: 'bonus' },
+    stats: { wins: { type: Number, default: 0 }, losses: { type: Number, default: 0 } },
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     isBlocked: { type: Boolean, default: false },
-    avatar: { type: String, default: '' },
     passwordResetToken: String,
     passwordResetExpires: Date,
-    // --- NOVOS CAMPOS ADICIONADOS ---
-    bio: { type: String, maxlength: 150, default: '' },
-    stats: {
-        wins: { type: Number, default: 0 },
-        losses: { type: Number, default: 0 },
-    },
-    activeBettingMode: { type: String, enum: ['real', 'bonus'], default: 'real' }
 }, { timestamps: true });
 
+userSchema.virtual('totalBalance').get(function() {
+  return this.balance + this.bonusBalance;
+});
+
+userSchema.set('toJSON', { virtuals: true });
+userSchema.set('toObject', { virtuals: true });
+
 const transactionSchema = new mongoose.Schema({
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    type: { type: String, enum: ['deposit', 'withdrawal', 'game_bet', 'game_win', 'commission', 'game_bet_refund'], required: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    transactionId: { type: String, unique: true, default: () => `T${generateNumericId(8)}` },
+    type: { type: String, enum: ['deposit', 'withdrawal'], required: true },
+    method: { type: String, required: true },
     amount: { type: Number, required: true },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-    paymentMethod: { type: String },
-    transactionId: { type: String },
-    proofOfPayment: { type: String },
-    recipientAccount: { type: String },
-    recipientName: { type: String },
-    game: { type: mongoose.Schema.Types.ObjectId, ref: 'Game' },
-    relatedUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    proof: { type: String },
+    holderName: { type: String },
+    phoneNumber: { type: String },
+    adminNotes: { type: String }
 }, { timestamps: true });
 
 const gameSchema = new mongoose.Schema({
+    gameId: { type: String, unique: true, default: () => `G${generateNumericId(5)}` },
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-    player1: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    player2: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    turn: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     boardState: { type: [[String]], required: true },
-    status: { type: String, enum: ['pending', 'in_progress', 'completed', 'abandoned', 'cancelled'], default: 'pending' },
-    winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    status: { type: String, enum: ['waiting', 'in_progress', 'completed', 'abandoned', 'cancelled'], default: 'waiting' },
+    winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     betAmount: { type: Number, required: true },
     commissionAmount: { type: Number, default: 0 },
-    bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     isPrivate: { type: Boolean, default: false },
     gameCode: { type: String, unique: true, sparse: true },
     lobbyDescription: { type: String, maxlength: 100 },
@@ -84,16 +87,9 @@ const gameSchema = new mongoose.Schema({
     hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
-
 const Setting = mongoose.model('Setting', settingSchema);
 const User = mongoose.model('User', userSchema);
 const Transaction = mongoose.model('Transaction', transactionSchema);
 const Game = mongoose.model('Game', gameSchema);
 
-
-module.exports = {
-    Setting,
-    User,
-    Transaction,
-    Game
-};
+module.exports = { User, Transaction, Game, Setting };
