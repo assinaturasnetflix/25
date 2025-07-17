@@ -1,11 +1,11 @@
 // ==========================================================
-// FICHEIRO: models.js (Versão Completa e Corrigida)
+// FICHEIRO: models.js (VERSÃO FINAL E CORRIGIDA)
 // ==========================================================
 
 const mongoose = require('mongoose');
 const { generateNumericId } = require('./utils');
-const config = require('./config');
 
+// Schema para as Configurações da Plataforma
 const settingSchema = new mongoose.Schema({
     singleton: { type: String, default: 'main_settings', unique: true },
     platformCommission: { type: Number, default: 0.15, min: 0, max: 1 },
@@ -27,6 +27,7 @@ const settingSchema = new mongoose.Schema({
     }]
 });
 
+// Schema do Utilizador
 const userSchema = new mongoose.Schema({
     username: { type: String, required: true, unique: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
@@ -54,6 +55,7 @@ userSchema.virtual('totalBalance').get(function() {
 userSchema.set('toJSON', { virtuals: true });
 userSchema.set('toObject', { virtuals: true });
 
+// Schema das Transações
 const transactionSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     transactionId: { type: String, unique: true, default: () => `T${generateNumericId(8)}` },
@@ -67,14 +69,11 @@ const transactionSchema = new mongoose.Schema({
     adminNotes: { type: String }
 }, { timestamps: true });
 
+// Schema dos Jogos
 const gameSchema = new mongoose.Schema({
     gameId: { type: String, unique: true, default: () => `G${generateNumericId(5)}` },
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-
-    // --- CAMPO ADICIONADO E CORRIGIDO ---
     creator: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    // ------------------------------------
-
     bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     boardState: { type: [[String]], required: true },
     currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -83,19 +82,24 @@ const gameSchema = new mongoose.Schema({
     betAmount: { type: Number, required: true },
     commissionAmount: { type: Number, default: 0 },
     isPrivate: { type: Boolean, default: false },
+    
+    // ===========================================================
+    // *** LINHA CRÍTICA DA CORREÇÃO PARA O ERRO "DUPLICATE KEY" ***
+    // ===========================================================
     gameCode: { type: String, unique: true, sparse: true },
+    // ===========================================================
+    
     lobbyDescription: { type: String, maxlength: 100 },
-    timeLimit: { type: Number, default: null },
     moveHistory: [{
         player: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        from: { r: Number, c: Number },
-        to: { r: Number, c: Number },
-        captured: [{ r: Number, c: Number }],
+        from: [Number], // Simplificado para array de números
+        to: [Number],   // Simplificado para array de números
+        captured: [[Number]], // Array de arrays de números
         timestamp: { type: Date, default: Date.now }
     }],
-    ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
+
 
 const Setting = mongoose.model('Setting', settingSchema);
 const User = mongoose.model('User', userSchema);

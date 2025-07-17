@@ -1,10 +1,11 @@
 // =================================================================
-// FICHEIRO: socketManager.js (VERSÃO FINAL E CORRIGIDA)
+// FICHEIRO: socketManager.js (VERSÃO FINAL COM CORREÇÃO E11000)
 // =================================================================
 
 const { User, Game, Setting } = require('./models');
 const { getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition, createInitialBoard } = require('./gameLogic');
 const mongoose = require('mongoose');
+const { generateNumericId } = require('./utils');
 
 // Mapeamentos para gestão de utilizadores e conexões
 const userSockets = new Map(); // key: userId, value: Set<socket.id>
@@ -191,19 +192,25 @@ module.exports = function(io) {
         socket.on('create_game', async ({ betAmount, description, isPrivate }) => {
             const session = await mongoose.startSession();
             session.startTransaction();
+            let amountToReturnOnFail = betAmount;
+
             try {
                 const user = await User.findById(userId).session(session);
                 if (!user) throw new Error('Utilizador inválido.');
+                
                 const settings = await Setting.findOne({ singleton: 'main_settings' }).session(session);
                 if (!settings || betAmount < settings.minBet || betAmount > settings.maxBet) {
                     throw new Error(`A aposta deve estar entre ${settings.minBet} e ${settings.maxBet} MT.`);
                 }
+                
                 const balanceField = user.activeBettingMode === 'bonus' ? 'bonusBalance' : 'balance';
                 if (user[balanceField] < betAmount) {
                     throw new Error('Saldo insuficiente na carteira ativa.');
                 }
+
                 user[balanceField] -= betAmount;
-                const game = new Game({
+
+                const gameData = {
                     players: [user._id],
                     creator: user._id,
                     betAmount,
@@ -211,15 +218,36 @@ module.exports = function(io) {
                     boardState: createInitialBoard(),
                     isPrivate,
                     lobbyDescription: isPrivate ? '' : description,
-                    gameCode: isPrivate ? `P${Math.random().toString(36).substr(2, 5).toUpperCase()}` : null
-                });
+                };
+                
+                // *** CORREÇÃO CRÍTICA PARA ERRO E11000 ***
+                // Só gera um gameCode se o jogo for privado.
+                if (isPrivate) {
+                    gameData.gameCode = `P${generateNumericId(5)}`;
+                }
+
+                const game = new Game(gameData);
+                
                 await user.save({ session });
                 await game.save({ session });
                 await session.commitTransaction();
-                io.to(userId).emit('private_game_created_show_code', { privateCode: game.gameCode });
+
+                if (isPrivate) {
+                    // Envia o código apenas para o socket que fez o pedido
+                    socket.emit('private_game_created_show_code', { privateCode: game.gameCode });
+                }
+
                 emitLobbyUpdate(io);
+
             } catch (error) {
                 await session.abortTransaction();
+                // Devolve o dinheiro se a transação falhou
+                const userToRefund = await User.findById(userId);
+                if (userToRefund) {
+                     const balanceField = userToRefund.activeBettingMode === 'bonus' ? 'bonusBalance' : 'balance';
+                     userToRefund[balanceField] += amountToReturnOnFail;
+                     await userToRefund.save();
+                }
                 socket.emit('error_message', { message: error.message || 'Erro ao criar a partida.' });
             } finally {
                 session.endSession();
@@ -255,13 +283,13 @@ module.exports = function(io) {
 
                 const populatedGame = await Game.findById(game._id);
                 const creatorId = populatedGame.players[0]._id.toString();
-                const joinerId = populatedGame.players[1]._id.toString();
                 
-                // Envia evento para os sockets específicos dos jogadores no lobby
+                // Envia o evento para os sockets do criador
                 const creatorSockets = userSockets.get(creatorId);
                 if (creatorSockets) creatorSockets.forEach(sid => io.to(sid).emit('game_start', populatedGame));
 
-                const joinerSockets = userSockets.get(joinerId);
+                // Envia o evento para os sockets do jogador que entrou
+                const joinerSockets = userSockets.get(userId);
                 if (joinerSockets) joinerSockets.forEach(sid => io.to(sid).emit('game_start', populatedGame));
                 
                 emitLobbyUpdate(io);
