@@ -40,6 +40,10 @@ const userSchema = new mongoose.Schema({
     isBlocked: { type: Boolean, default: false },
     passwordResetToken: String,
     passwordResetExpires: Date,
+    // --- CAMPO ADICIONADO AQUI ---
+    // Armazenará o objeto de inscrição para as notificações push.
+    // O tipo 'Mixed' permite que ele armazene um objeto JSON flexível.
+    pushSubscription: { type: mongoose.Schema.Types.Mixed } 
 }, { timestamps: true });
 
 userSchema.virtual('totalBalance').get(function() {

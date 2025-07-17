@@ -81,7 +81,6 @@ const controllers = {
     },
 
     loginUser: async (req, res) => {
-        // --- CORREÇÃO APLICADA AQUI: VERIFICAÇÃO OBRIGATÓRIA PARA TODOS ---
         const recaptchaToken = req.body['g-recaptcha-response'];
         if (!recaptchaToken || !(await verifyRecaptcha(recaptchaToken))) {
             return res.status(400).json({ message: 'Falha na verificação reCAPTCHA. Tente novamente.' });
@@ -236,6 +235,29 @@ const controllers = {
         }
     },
     
+    subscribePushNotifications: async (req, res) => {
+        const { subscription } = req.body;
+
+        if (!subscription) {
+            return res.status(400).json({ message: 'Nenhum objeto de inscrição fornecido.' });
+        }
+
+        try {
+            const user = await User.findById(req.user.id);
+            if (!user) {
+                return res.status(404).json({ message: 'Utilizador não encontrado.' });
+            }
+
+            user.pushSubscription = subscription;
+            await user.save();
+
+            res.status(200).json({ message: 'Inscrição para notificações push guardada com sucesso.' });
+        } catch (error) {
+            console.error("Erro ao guardar inscrição push:", error);
+            res.status(500).json({ message: 'Erro no servidor ao tentar guardar a inscrição.' });
+        }
+    },
+
     getRanking: async (req, res) => {
         const ranking = await User.find({ role: 'user' })
             .sort({ 'stats.wins': -1, 'stats.losses': 1, 'createdAt': 1 })
@@ -340,6 +362,34 @@ const controllers = {
         }
     },
 
+    getUserHistory: async (req, res) => {
+        try {
+            const userId = req.params.id;
+
+            const user = await User.findById(userId).select('-password');
+            if (!user) {
+                return res.status(404).json({ message: 'Utilizador não encontrado.' });
+            }
+
+            const transactions = await Transaction.find({ userId: userId }).sort({ createdAt: -1 });
+
+            const games = await Game.find({ players: userId })
+                .populate('players', 'username avatar')
+                .populate('winner', 'username')
+                .sort({ createdAt: -1 });
+
+            res.status(200).json({
+                user,
+                transactions,
+                games
+            });
+
+        } catch (error) {
+            console.error("Erro ao buscar histórico do utilizador:", error);
+            res.status(500).json({ message: 'Erro no servidor ao buscar o histórico do utilizador.' });
+        }
+    },
+
     getAllUsers: async (req, res) => {
         const users = await User.find({}).select('-password');
         res.json(users);
@@ -367,12 +417,18 @@ const controllers = {
 
         if (balanceType === 'bonus') {
             user.bonusBalance += finalAmount;
+            if (user.bonusBalance < 0) user.bonusBalance = 0;
         } else {
             user.balance += finalAmount;
+            if (user.balance < 0) user.balance = 0;
         }
 
         await user.save();
-        res.json({ message: 'Saldo atualizado com sucesso.', newBalance: user.balance, newBonusBalance: user.bonusBalance });
+        res.json({ 
+            message: 'Saldo atualizado com sucesso.', 
+            newBalance: user.balance, 
+            newBonusBalance: user.bonusBalance 
+        });
     },
 
     getAllTransactions: async (req, res) => {
@@ -429,17 +485,42 @@ const controllers = {
     
     updatePlatformSettings: async (req, res) => {
         try {
-            const { platformCommission, minDeposit, minBet, isBonusEnabled, welcomeBonusAmount } = req.body;
+            const { 
+                platformCommission, 
+                minDeposit, 
+                maxDeposit,
+                minWithdrawal,
+                maxWithdrawal,
+                maxBet,
+                minBet,
+                passwordResetTokenExpiresIn,
+                platformName,
+                isBonusEnabled, 
+                welcomeBonusAmount 
+            } = req.body;
+            
             const updateData = {};
 
             if (platformCommission !== undefined) updateData.platformCommission = platformCommission / 100;
             if (minDeposit !== undefined) updateData.minDeposit = minDeposit;
+            if (maxDeposit !== undefined) updateData.maxDeposit = maxDeposit;
+            if (minWithdrawal !== undefined) updateData.minWithdrawal = minWithdrawal;
+            if (maxWithdrawal !== undefined) updateData.maxWithdrawal = maxWithdrawal;
+            if (maxBet !== undefined) updateData.maxBet = maxBet;
             if (minBet !== undefined) updateData.minBet = minBet;
+            if (passwordResetTokenExpiresIn !== undefined) updateData.passwordResetTokenExpiresIn = passwordResetTokenExpiresIn;
+            if (platformName !== undefined) updateData.platformName = platformName;
             if (isBonusEnabled !== undefined) updateData.isBonusEnabled = isBonusEnabled;
             if (welcomeBonusAmount !== undefined) updateData.welcomeBonusAmount = welcomeBonusAmount;
 
+            if (Object.keys(updateData).length === 0) {
+                return res.status(400).json({ message: "Nenhum dado fornecido para atualização." });
+            }
+
             await Setting.findOneAndUpdate({ singleton: 'main_settings' }, { $set: updateData }, { new: true, upsert: true });
+            
             res.status(200).json({ message: "Configurações gerais atualizadas com sucesso." });
+
         } catch (error) {
              res.status(500).json({ message: "Erro ao atualizar as configurações.", error: error.message });
         }

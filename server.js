@@ -6,9 +6,28 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const routes = require('./routes');
 const socketManager = require('./socketManager');
+const webpush = require('web-push'); // --- 1. IMPORTAR A BIBLIOTECA ---
 
 const app = express();
 const server = http.createServer(app);
+
+// --- 2. CONFIGURAR AS CHAVES VAPID ---
+// Certifique-se de que as chaves VAPID estão no seu arquivo .env
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY;
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY;
+
+if (!vapidPublicKey || !vapidPrivateKey) {
+    console.warn("AVISO: Chaves VAPID não definidas no arquivo .env. As notificações push não funcionarão.");
+} else {
+    webpush.setVapidDetails(
+        'mailto:seu-email-de-contato@exemplo.com', // Substitua pelo seu email de contato
+        vapidPublicKey,
+        vapidPrivateKey
+    );
+    console.log("Configuração VAPID para notificações push carregada.");
+}
+// --- FIM DA CONFIGURAÇÃO VAPID ---
+
 
 // --- INÍCIO DA ATUALIZAÇÃO DE CORS (EQUILÍBRIO FINAL) ---
 
@@ -22,10 +41,6 @@ const corsOptions = {
         
         const whitelist = corsOrigin ? corsOrigin.split(',').map(item => item.trim()) : [];
 
-        // --- CORREÇÃO APLICADA AQUI ---
-        // Reintroduzimos a verificação '!origin'.
-        // Isto permite pedidos de servidor para servidor (como o cron-job) que não têm origem,
-        // mas continua a bloquear pedidos de navegadores de domínios não autorizados.
         if (!origin || whitelist.indexOf(origin) !== -1) {
             callback(null, true);
         } else {

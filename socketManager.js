@@ -1,6 +1,7 @@
 const { Game, User, Setting } = require('./models');
 const { createInitialBoard, getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition } = require('./gameLogic');
 const mongoose = require('mongoose');
+const webpush = require('web-push'); // --- 1. IMPORTAR A BIBLIOTECA ---
 
 let activeUsers = {};
 let activeLobbies = {};
@@ -12,6 +13,36 @@ const getLiveSettings = async () => {
     }
     return settings;
 };
+
+// --- 2. FUNÇÃO AUXILIAR PARA ENVIAR NOTIFICAÇÕES ---
+const sendGameReadyNotification = async (creatorId, opponentUsername, gameId) => {
+    try {
+        const creator = await User.findById(creatorId);
+
+        // Verifica se o criador tem uma inscrição de push guardada
+        if (creator && creator.pushSubscription) {
+            const payload = JSON.stringify({
+                title: 'O seu oponente chegou!',
+                body: `${opponentUsername} entrou na sua partida. O jogo vai começar!`,
+                icon: '/icons/icon-192x192.png', // Caminho para um ícone no seu frontend
+                data: {
+                    url: `/game.html?id=${gameId}` // URL para abrir ao clicar na notificação
+                }
+            });
+
+            await webpush.sendNotification(creator.pushSubscription, payload);
+            console.log(`Notificação de "jogo pronto" enviada para ${creator.username}`);
+        }
+    } catch (error) {
+        // Erros são comuns aqui (ex: inscrição expirada). Apenas registamos o erro.
+        console.error("Erro ao enviar notificação push:", error.message);
+        // Se a inscrição for inválida (código 410 Gone), podemos removê-la do user
+        if (error.statusCode === 410) {
+            await User.updateOne({ _id: creatorId }, { $unset: { pushSubscription: "" } });
+        }
+    }
+};
+
 
 const socketManager = (io) => {
     io.on('connection', (socket) => {
@@ -164,6 +195,14 @@ const socketManager = (io) => {
                 io.emit('lobby_update', Object.values(activeLobbies).map(l => l.data));
             }
             
+            // --- 3. DISPARAR A NOTIFICAÇÃO E O EVENTO DE REDIRECIONAMENTO ---
+            const creatorId = populatedGame.players[0]._id;
+            const opponentUsername = populatedGame.players[1].username;
+            
+            // Envia a notificação push para o criador do jogo (se ele estiver offline)
+            sendGameReadyNotification(creatorId, opponentUsername, populatedGame.id);
+
+            // Envia o evento de redirecionamento para ambos os jogadores (se estiverem online)
             io.to(populatedGame.id.toString()).emit('game_session_ready', populatedGame);
         });
         
@@ -255,7 +294,6 @@ const socketManager = (io) => {
              const game = await Game.findById(gameId);
              if(!game || !userId || !game.currentPlayer.equals(userId)) return;
 
-             // --- CORREÇÃO APLICADA AQUI ---
              const playerIndex = game.players.findIndex(p => p.equals(userId));
              if (playerIndex === -1) return;
              const playerSymbol = playerIndex === 0 ? 'b' : 'w';
@@ -271,7 +309,6 @@ const socketManager = (io) => {
 
             if (!game || !playerId || !game.currentPlayer.equals(playerId)) return;
             
-            // --- CORREÇÃO APLICADA AQUI ---
             const playerIndex = game.players.findIndex(p => p._id.equals(playerId));
             if (playerIndex === -1) return;
             const playerSymbol = playerIndex === 0 ? 'b' : 'w';
