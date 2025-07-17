@@ -1,5 +1,5 @@
 // ==========================================================
-// FICHEIRO: server.js (VERSÃO FINAL E ROBUSTA)
+// FICHEIRO: server.js (VERSÃO DE DIAGNÓSTICO E CORREÇÃO FORÇADA)
 // ==========================================================
 
 require('dotenv').config();
@@ -51,7 +51,6 @@ app.use('/api', routes);
 console.log(">>> Rotas da API carregadas. Aguardando conexão com a base de dados... <<<");
 
 // --- FUNÇÃO PARA INICIAR O SERVIDOR ---
-// Criámos uma função para organizar o arranque.
 async function startServer() {
     try {
         // 1. CONECTAR À BASE DE DADOS
@@ -63,22 +62,30 @@ async function startServer() {
         await mongoose.connect(MONGO_URI);
         console.log('MongoDB Conectado com sucesso!');
 
-        // 2. CORRIGIR O ÍNDICE (a nossa lógica de correção)
-        console.log("A verificar e a corrigir o índice 'gameCode_1'...");
+        // 2. CORRIGIR O ÍNDICE (LÓGICA FORÇADA)
+        console.log("A iniciar a verificação forçada do índice 'gameCode_1'...");
         const gameCollection = mongoose.connection.collection('games');
-        const indexes = await gameCollection.indexes();
-        const gameCodeIndex = indexes.find(idx => idx.name === 'gameCode_1');
         
-        if (gameCodeIndex && !gameCodeIndex.sparse) {
-            console.log("Índice incorreto encontrado. A remover...");
+        // --- INÍCIO DA NOVA LÓGICA ---
+        const indexes = await gameCollection.indexes();
+        // LINHA DE DIAGNÓSTICO: VAMOS VER O QUE O MONGODB ESTÁ REALMENTE A DIZER
+        console.log("Estrutura de índices reportada pela DB:", JSON.stringify(indexes, null, 2));
+
+        const gameCodeIndex = indexes.find(idx => idx.name === 'gameCode_1');
+
+        // LÓGICA AGRESSIVA: Se o índice existir, assumimos que pode estar errado e recriamos.
+        if (gameCodeIndex) {
+            console.log("Índice 'gameCode_1' encontrado. A forçar a remoção para garantir a configuração correta...");
             await gameCollection.dropIndex('gameCode_1');
-            console.log("Índice antigo removido. Será recriado corretamente.");
+            console.log("Índice antigo removido com sucesso. O Mongoose irá recriá-lo ao arrancar.");
         } else {
-            console.log("Índice 'gameCode_1' está correto ou não existe (será criado).");
+            console.log("Índice 'gameCode_1' não existe. O Mongoose irá criá-lo.");
         }
+        // --- FIM DA NOVA LÓGICA ---
+        
         console.log("Verificação da Base de Dados completa.");
 
-        // 3. SÓ AGORA INICIAMOS O SOCKET.IO E O SERVIDOR HTTP
+        // 3. SÓ AGORA INICIAMOS O RESTO
         const io = new Server(server, { cors: corsOptions });
         socketManager(io);
 
