@@ -1,31 +1,44 @@
 // =========================================================================
-// FICHEIRO: socketManager.js (VERSÃO FINAL COM CORREÇÃO DE INÍCIO DE JOGO)
+// FICHEIRO: socketManager.js (VERSÃO FINAL COM LÓGICA DE ABANDONO CORRIGIDA)
 // =========================================================================
 
 const { User, Game, Setting } = require('./models');
 const { getPossibleMovesForPlayer, applyMoveToBoard, checkWinCondition, createInitialBoard } = require('./gameLogic');
-const mongoose = require('mongoose');
+const mongoose =require('mongoose');
 const { generateNumericId } = require('./utils');
 
 const disconnectionTimers = new Map();
 
+// --- LÓGICA DE ABANDONO (ATUALIZADA) ---
 async function handleUserDisconnection(io, userId) {
+    // Aumentamos o tempo para 30 segundos para ser mais tolerante a redes lentas durante a navegação
+    const ABANDONMENT_TIMEOUT = 30000; 
+
     const timer = setTimeout(async () => {
         try {
+            // =================================================================
+            //                *** CORREÇÃO CRÍTICA APLICADA AQUI ***
+            // SÓ consideramos abandono se o jogo já estiver "in_progress".
+            // Se um jogador desconectar enquanto o jogo está "waiting", não é abandono.
+            // =================================================================
             const activeGame = await Game.findOne({ players: userId, status: 'in_progress' });
+
             if (activeGame) {
+                // A outra pessoa é a vencedora
                 const winnerId = activeGame.players.find(p => p.toString() !== userId).toString();
-                console.log(`[Abandono] Jogo ${activeGame.gameId} processado como abandonado por ${userId}. Vencedor: ${winnerId}`);
+                console.log(`[Abandono] Jogo ${activeGame.gameId} processado como abandonado por ${userId} após ${ABANDONMENT_TIMEOUT/1000}s. Vencedor: ${winnerId}`);
                 await endGame(io, activeGame.gameId, { winnerId, loserId: userId, reason: 'abandonment' });
+            } else {
+                 console.log(`[Timer Desconexão] Utilizador ${userId} desconectou, mas não tinha jogo ativo. Nenhuma ação tomada.`);
             }
             disconnectionTimers.delete(userId);
         } catch (error) {
             console.error(`[Erro Abandono] Falha ao processar abandono para ${userId}:`, error);
         }
-    }, 15000); 
+    }, ABANDONMENT_TIMEOUT); 
 
     disconnectionTimers.set(userId, timer);
-    console.log(`[Timer Desconexão] Timer de 15s iniciado para utilizador ${userId}.`);
+    console.log(`[Timer Desconexão] Timer de ${ABANDONMENT_TIMEOUT/1000}s iniciado para utilizador ${userId}.`);
 }
 
 async function endGame(io, gameId, result) {
@@ -33,9 +46,8 @@ async function endGame(io, gameId, result) {
     session.startTransaction();
     try {
         const { winnerId, loserId, reason, isDraw } = result;
-
         const game = await Game.findOneAndUpdate(
-            { gameId: gameId, status: { $in: ['in_progress', 'waiting'] } }, // Permite finalizar um jogo que ainda está em 'waiting'
+            { gameId: gameId, status: { $in: ['in_progress', 'waiting'] } },
             {
                 $set: {
                     status: reason === 'abandonment' ? 'abandoned' : 'completed',
@@ -44,33 +56,23 @@ async function endGame(io, gameId, result) {
             },
             { new: true, session: session }
         );
-
         if (!game) {
-            console.log(`[EndGame Race Condition] Tentativa de finalizar o jogo ${gameId} que já não está ativo. Operação abortada.`);
-            await session.abortTransaction();
-            session.endSession();
-            return;
+            await session.abortTransaction(); session.endSession(); return;
         }
-
         if (!isDraw) {
             const winner = await User.findById(winnerId).session(session);
             const loser = await User.findById(loserId).session(session);
             if (winner && loser) {
                 winner.stats.wins += 1;
                 loser.stats.losses += 1;
-                
                 const settings = await Setting.findOne({ singleton: 'main_settings' }).lean().session(session);
                 const totalPot = game.betAmount * 2;
                 const commission = totalPot * (settings?.platformCommission || 0.15);
                 const winnerPrize = totalPot - commission;
-                
                 game.commissionAmount = commission;
-
                 if (game.bettingMode === 'real') winner.balance += winnerPrize;
                 else winner.bonusBalance += winnerPrize;
-                
-                await winner.save({ session });
-                await loser.save({ session });
+                await winner.save({ session }); await loser.save({ session });
             }
         } else {
              const [p1, p2] = await Promise.all([
@@ -83,13 +85,10 @@ async function endGame(io, gameId, result) {
                 await p1.save({ session }); await p2.save({ session });
              }
         }
-        
         await game.save({ session });
         await session.commitTransaction();
-        
         const finalGame = await Game.findById(game._id).populate('winner', 'username avatar').populate('players', 'username avatar');
         io.to(game.gameId).emit('game_over', { game: finalGame, reason });
-
     } catch (error) {
         await session.abortTransaction();
         console.error(`[Erro Fim de Jogo] Erro CRÍTICO ao finalizar o jogo ${gameId}:`, error);
@@ -98,6 +97,8 @@ async function endGame(io, gameId, result) {
         session.endSession();
     }
 }
+
+// ... (o resto do ficheiro continua igual)
 
 const emitLobbyUpdate = async (io) => {
     try {
@@ -126,7 +127,6 @@ module.exports = function(io) {
         const userId = socket.handshake.query.userId;
         if (!userId) return socket.disconnect(true);
         
-        console.log(`[Conexão] Utilizador ${userId} conectado com socket ${socket.id}.`);
         socket.join('lobby');
         socket.join(userId);
 
@@ -136,23 +136,35 @@ module.exports = function(io) {
             console.log(`[Reconexão] Utilizador ${userId} reconectado. Timer de abandono cancelado.`);
         }
 
+        socket.on('disconnect', () => {
+            console.log(`[Desconexão] Socket ${socket.id} (user: ${userId}) desconectado.`);
+            // Apenas inicia o timer de abandono se o utilizador não tiver mais nenhuma conexão ativa.
+            // Isto ajuda a prevenir falsos positivos durante a navegação.
+            setTimeout(() => {
+                const room = io.sockets.adapter.rooms.get(userId);
+                if (!room || room.size === 0) {
+                    handleUserDisconnection(io, userId);
+                } else {
+                    console.log(`[Desconexão] Utilizador ${userId} ainda tem ${room.size} sockets ativos. Timer de abandono não iniciado.`);
+                }
+            }, 1000); // Aumenta o delay para dar tempo ao novo socket de se conectar
+        });
+
+        // ... (o resto dos listeners como 'subscribe_to_game', 'player_ready', etc., continuam aqui sem alterações)
         socket.on('subscribe_to_game', async ({ gameId }) => {
             try {
                 const game = await Game.findOne({ gameId: gameId });
                 if (game && game.players.map(p => p.toString()).includes(userId)) {
                     socket.join(gameId);
-                    console.log(`[Jogo] Socket ${socket.id} (user: ${userId}) subscreveu ao jogo ${gameId}`);
                     await emitGameStateUpdate(io, gameId);
                 } else {
                     socket.emit('error_message', { message: 'Jogo não encontrado ou você não é um jogador.' });
                 }
             } catch (error) {
-                console.error(`[ERRO] Falha em subscribe_to_game para gameId ${gameId}:`, error);
                 socket.emit('error_message', { message: 'Erro ao entrar na sala do jogo.' });
             }
         });
 
-        // --- LÓGICA DE PRONTIDÃO E INÍCIO DE JOGO (CORRIGIDA) ---
         socket.on('player_ready', async ({ gameId }) => {
             try {
                 const game = await Game.findOne({ gameId });
@@ -162,27 +174,19 @@ module.exports = function(io) {
                     game.ready.push(userId);
                 }
                 
-                // Se ambos os jogadores estão prontos, o jogo começa.
                 if (game.players.length === 2 && game.ready.length === 2) {
                     game.status = 'in_progress';
-                    console.log(`[Início Confirmado] Jogo ${game.gameId} a iniciar...`);
                     
-                    // =================================================================
-                    //                *** CORREÇÃO CRÍTICA APLICADA AQUI ***
-                    // Verificamos imediatamente se o primeiro jogador tem movimentos.
-                    // O primeiro jogador (índice 0) é sempre as Brancas ('w').
-                    // =================================================================
                     const startingPlayerColor = 'w';
                     const startingPlayerId = game.players[0];
                     const opponentPlayerId = game.players[1];
                     const initialMoves = getPossibleMovesForPlayer(game.boardState, startingPlayerColor);
 
                     if (initialMoves.length === 0) {
-                        // Se não houver movimentos iniciais, o jogador das Brancas perde por bloqueio.
                         console.log(`[Fim Imediato] Jogo ${game.gameId} terminado no início. Jogador das Brancas (${startingPlayerId}) sem movimentos. Vencedor: ${opponentPlayerId}`);
-                        await game.save(); // Salva o status 'in_progress' antes de finalizar
+                        await game.save(); 
                         await endGame(io, game.gameId, { winnerId: opponentPlayerId, loserId: startingPlayerId, reason: 'checkmate' });
-                        return; // Termina a execução aqui para não enviar estado de jogo em andamento.
+                        return; 
                     }
                 }
     
@@ -236,17 +240,12 @@ module.exports = function(io) {
                 if (joiner[balanceField] < game.betAmount) throw new Error('Saldo insuficiente para entrar nesta partida.');
                 joiner[balanceField] -= game.betAmount;
                 game.players.push(joiner._id);
-                // `currentPlayer` já foi definido na criação do jogo.
                 await joiner.save({ session });
                 await game.save({ session });
                 await session.commitTransaction();
                 const populatedGame = await Game.findById(game._id).populate('players', 'username avatar');
-                const creatorId = populatedGame.players[0]._id.toString();
-                const joinerId = populatedGame.players[1]._id.toString();
-                console.log(`[Join] Jogador ${joinerId} entrou no jogo ${game.gameId}. Notificando ambos para irem para a sala de espera.`);
-                // O evento é `game_start` e o cliente ouve `game_start`
-                io.to(creatorId).emit('game_start', populatedGame);
-                io.to(joinerId).emit('game_start', populatedGame);
+                io.to(populatedGame.players[0]._id.toString()).emit('game_start', populatedGame);
+                io.to(populatedGame.players[1]._id.toString()).emit('game_start', populatedGame);
                 emitLobbyUpdate(io);
             } catch (error) {
                 await session.abortTransaction();
@@ -286,15 +285,6 @@ module.exports = function(io) {
                 await endGame(io, game.gameId, { winnerId, loserId: userId, reason: 'resignation' });
             } catch (error) { console.error("Erro em 'surrender':", error); }
         });
-        
-        socket.on('disconnect', () => {
-            console.log(`[Desconexão] Socket ${socket.id} (user: ${userId}) desconectado.`);
-            setTimeout(() => {
-                const room = io.sockets.adapter.rooms.get(userId);
-                if (!room || room.size === 0) {
-                    handleUserDisconnection(io, userId);
-                }
-            }, 500);
-        });
+
     });
 };
