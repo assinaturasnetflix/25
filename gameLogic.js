@@ -1,118 +1,205 @@
-const B = 'b'; 
-const W = 'w'; 
-const BK = 'bk'; 
-const WK = 'wk';
-const E = null;
+// gameLogic.js
+// Contém toda a lógica e regras do jogo de Damas Brasileiras (8x8).
+// Este módulo é 'puro', não depende de Express ou WebSockets, apenas do estado do jogo.
 
+const PIECE_TYPES = {
+    BLACK_PAWN: 'b',
+    WHITE_PAWN: 'w',
+    BLACK_KING: 'B',
+    WHITE_KING: 'W',
+    EMPTY: 'e',
+};
+
+/**
+ * Cria e retorna o estado inicial do tabuleiro de Damas Brasileiras 8x8.
+ * @returns {Array<Array<string>>} Uma matriz 8x8 representando o tabuleiro.
+ */
 const createInitialBoard = () => {
     return [
-        [E, B, E, B, E, B, E, B],
-        [B, E, B, E, B, E, B, E],
-        [E, B, E, B, E, B, E, B],
-        [E, E, E, E, E, E, E, E],
-        [E, E, E, E, E, E, E, E],
-        [W, E, W, E, W, E, W, E],
-        [E, W, E, W, E, W, E, W],
-        [W, E, W, E, W, E, W, E]
+        ['e', 'b', 'e', 'b', 'e', 'b', 'e', 'b'],
+        ['b', 'e', 'b', 'e', 'b', 'e', 'b', 'e'],
+        ['e', 'b', 'e', 'b', 'e', 'b', 'e', 'b'],
+        ['e', 'e', 'e', 'e', 'e', 'e', 'e', 'e'],
+        ['e', 'e', 'e', 'e', 'e', 'e', 'e', 'e'],
+        ['w', 'e', 'w', 'e', 'w', 'e', 'w', 'e'],
+        ['e', 'w', 'e', 'w', 'e', 'w', 'e', 'w'],
+        ['w', 'e', 'w', 'e', 'w', 'e', 'w', 'e'],
     ];
 };
 
-const isOpponent = (playerPiece, targetPiece) => {
-    if (!playerPiece || !targetPiece) return false;
-    const playerInitial = playerPiece.charAt(0);
-    const targetInitial = targetPiece.charAt(0);
-    return playerInitial !== targetInitial;
+/**
+ * Verifica se uma determinada posição está dentro dos limites do tabuleiro.
+ * @param {number} row - A linha.
+ * @param {number} col - A coluna.
+ * @returns {boolean} - True se a posição for válida.
+ */
+const isWithinBoard = (row, col) => row >= 0 && row < 8 && col >= 0 && col < 8;
+
+/**
+ * Verifica se uma peça pertence a um jogador específico.
+ * @param {string} piece - O tipo da peça ('b', 'w', 'B', 'W').
+ * @param {string} playerColor - A cor do jogador ('black' ou 'white').
+ * @returns {boolean} - True se a peça pertence ao jogador.
+ */
+const isPlayerPiece = (piece, playerColor) => {
+    if (playerColor === 'black') {
+        return piece === PIECE_TYPES.BLACK_PAWN || piece === PIECE_TYPES.BLACK_KING;
+    }
+    if (playerColor === 'white') {
+        return piece === PIECE_TYPES.WHITE_PAWN || piece === PIECE_TYPES.WHITE_KING;
+    }
+    return false;
 };
 
-const findCaptureMovesForKing = (board, r, c) => {
-    const piece = board[r][c];
-    if (!piece || piece.length === 1) return [];
-    const moves = [];
-    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+/**
+ * Encontra todas as sequências de captura possíveis para um jogador (recursivamente).
+ * Esta é a função central para impor a captura obrigatória e a lei da maioria.
+ * @param {Array<Array<string>>} board - O estado atual do tabuleiro.
+ * @param {string} playerColor - A cor do jogador que está a mover.
+ * @returns {Array<Object>} Um array de sequências de captura. Ex: [{ path: [[r1,c1], [r3,c3]], captures: 1 }]
+ */
+const findAllCaptureSequences = (board, playerColor) => {
+    let allSequences = [];
+    let maxCaptures = 0;
 
-    for (const [dr, dc] of directions) {
-        let opponentFound = null;
-        let opponentPos = null;
-
-        for (let i = 1; i < 8; i++) {
-            const nr = r + dr * i;
-            const nc = c + dc * i;
-
-            if (!(nr >= 0 && nr < 8 && nc >= 0 && nc < 8)) break;
-
-            const targetCell = board[nr][nc];
-
-            if (targetCell) {
-                if (isOpponent(piece, targetCell)) {
-                    if (opponentFound) break;
-                    opponentFound = targetCell;
-                    opponentPos = [nr, nc];
-                } else {
-                    break;
-                }
-            } else {
-                if (opponentFound) {
-                    moves.push({
-                        from: [r, c],
-                        to: [nr, nc],
-                        captured: [opponentPos]
-                    });
-                }
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const piece = board[r][c];
+            if (isPlayerPiece(piece, playerColor)) {
+                findCaptureSequencesForPiece(board, r, c, piece, [{ r, c }], []).forEach(seq => {
+                    const capturesCount = seq.capturedPieces.length;
+                    if (capturesCount > 0) {
+                        if (capturesCount > maxCaptures) {
+                            maxCaptures = capturesCount;
+                            allSequences = [seq];
+                        } else if (capturesCount === maxCaptures) {
+                            allSequences.push(seq);
+                        }
+                    }
+                });
             }
         }
     }
-    return moves;
+    // Retorna apenas as sequências com o número máximo de capturas (lei da maioria).
+    return allSequences.filter(seq => seq.capturedPieces.length === maxCaptures);
 };
 
-const findCaptureMovesForPawn = (board, r, c) => {
-    const piece = board[r][c];
-    if (!piece || piece.length > 1) return [];
-    const moves = [];
-    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+
+/**
+ * Função recursiva auxiliar para encontrar sequências de captura para UMA peça específica.
+ */
+function findCaptureSequencesForPiece(board, r, c, piece, currentPath, capturedSoFar) {
+    let sequences = [];
+    const isKing = piece === 'B' || piece === 'W';
+    const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]]; // Todas as 4 diagonais
 
     for (const [dr, dc] of directions) {
-        const nr = r + dr;
-        const nc = c + dc;
-        const nnr = r + dr * 2;
-        const nnc = c + dc * 2;
+        let potentialCaptures = [];
 
-        if (nnr >= 0 && nnr < 8 && nnc >= 0 && nnc < 8) {
-            if(board[nnr][nnc] === E) {
-                const jumpedPiece = board[nr][nc];
-                if (jumpedPiece && isOpponent(piece, jumpedPiece)) {
-                    moves.push({ from: [r, c], to: [nnr, nnc], captured: [[nr, nc]] });
-                }
-            }
-        }
-    }
-    return moves;
-};
-
-const findSimpleMoves = (board, r, c) => {
-    const piece = board[r][c];
-    if (!piece) return [];
-    const moves = [];
-    
-    if (piece === W || piece === B) {
-        const forward = piece === W ? -1 : 1;
-        const directions = [[forward, -1], [forward, 1]];
-        for (const [dr, dc] of directions) {
-            const nr = r + dr;
-            const nc = c + dc;
-            if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === E) {
-                moves.push({ from: [r, c], to: [nr, nc], captured: [] });
-            }
-        }
-    } else {
-        const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
-        for (const [dr, dc] of directions) {
+        // Lógica para a Dama (King)
+        if (isKing) {
+            let pathIsClear = true;
             for (let i = 1; i < 8; i++) {
-                const nr = r + dr * i;
-                const nc = c + dc * i;
-                if (nr >= 0 && nr < 8 && nc >= 0 && nc < 8 && board[nr][nc] === E) {
-                    moves.push({ from: [r, c], to: [nr, nc], captured: [] });
-                } else {
-                    break;
+                const nextR = r + i * dr;
+                const nextC = c + i * dc;
+                const landR = nextR + dr;
+                const landC = nextC + dc;
+
+                if (!isWithinBoard(nextR, nextC) || !isWithinBoard(landR, landC)) break;
+                
+                const nextCell = board[nextR][nextC];
+                const landCell = board[landR][landC];
+
+                // Se a casa adjacente estiver ocupada
+                if(nextCell !== PIECE_TYPES.EMPTY) {
+                    if (pathIsClear && !isPlayerPiece(nextCell, isPlayerPiece(piece, 'white') ? 'white' : 'black') && landCell === PIECE_TYPES.EMPTY) {
+                        potentialCaptures.push({ capR: nextR, capC: nextC, landR, landC });
+                    }
+                    pathIsClear = false; // Bloqueia o caminho para outras capturas nesta direção
+                }
+            }
+        }
+        // Lógica para o Peão (Pawn)
+        else {
+            const capR = r + dr;
+            const capC = c + dc;
+            const landR = r + 2 * dr;
+            const landC = c + 2 * dc;
+
+            if (isWithinBoard(landR, landC) && board[landR][landC] === PIECE_TYPES.EMPTY) {
+                const capturedPiece = board[capR][capC];
+                if (capturedPiece !== PIECE_TYPES.EMPTY && !isPlayerPiece(capturedPiece, isPlayerPiece(piece, 'white') ? 'white' : 'black')) {
+                    potentialCaptures.push({ capR, capC, landR, landC });
+                }
+            }
+        }
+        
+        // Para cada captura potencial encontrada, continua a busca recursivamente
+        for (const { capR, capC, landR, landC } of potentialCaptures) {
+            // Previne capturar a mesma peça duas vezes na mesma sequência
+            if (capturedSoFar.some(p => p.r === capR && p.c === capC)) continue;
+
+            const tempBoard = board.map(row => [...row]);
+            tempBoard[landR][landC] = piece;
+            tempBoard[r][c] = PIECE_TYPES.EMPTY;
+            tempBoard[capR][capC] = PIECE_TYPES.EMPTY;
+
+            const newPath = [...currentPath, {r: landR, c: landC}];
+            const newCaptured = [...capturedSoFar, {r: capR, c: capC}];
+
+            const deeperSequences = findCaptureSequencesForPiece(tempBoard, landR, landC, piece, newPath, newCaptured);
+            if (deeperSequences.length > 0) {
+                sequences.push(...deeperSequences);
+            } else {
+                sequences.push({ path: newPath, capturedPieces: newCaptured });
+            }
+        }
+    }
+
+    if (sequences.length === 0 && capturedSoFar.length > 0) {
+        return [{ path: currentPath, capturedPieces: capturedSoFar }];
+    }
+    
+    return sequences;
+}
+
+
+/**
+ * Encontra todos os movimentos simples (não-captura) possíveis para um jogador.
+ * @param {Array<Array<string>>} board - O estado do tabuleiro.
+ * @param {string} playerColor - A cor do jogador.
+ * @returns {Array<Object>} Um array de movimentos possíveis. Ex: [{ from: [r,c], to: [r,c] }]
+ */
+const findSimpleMoves = (board, playerColor) => {
+    const moves = [];
+    const forwardDir = playerColor === 'white' ? -1 : 1;
+
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            const piece = board[r][c];
+            if (!isPlayerPiece(piece, playerColor)) continue;
+
+            // Movimentos da Dama (King)
+            if (piece === 'B' || piece === 'W') {
+                const directions = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+                for (const [dr, dc] of directions) {
+                    for (let i = 1; i < 8; i++) {
+                        const nextR = r + i * dr;
+                        const nextC = c + i * dc;
+                        if (!isWithinBoard(nextR, nextC) || board[nextR][nextC] !== PIECE_TYPES.EMPTY) break;
+                        moves.push({ from: { r, c }, to: { r: nextR, c: nextC } });
+                    }
+                }
+            }
+            // Movimentos do Peão (Pawn)
+            else {
+                const directions = [[forwardDir, -1], [forwardDir, 1]];
+                for (const [dr, dc] of directions) {
+                    const nextR = r + dr;
+                    const nextC = c + dc;
+                    if (isWithinBoard(nextR, nextC) && board[nextR][nextC] === PIECE_TYPES.EMPTY) {
+                        moves.push({ from: { r, c }, to: { r: nextR, c: nextC } });
+                    }
                 }
             }
         }
@@ -120,148 +207,88 @@ const findSimpleMoves = (board, r, c) => {
     return moves;
 };
 
-// --- NOVA FUNÇÃO INTERNA ---
-// Esta função apenas simula o movimento, mas NUNCA promove a peça.
-// É usada exclusivamente para a busca recursiva de capturas.
-const _simulateMoveOnBoard = (board, move) => {
-    const newBoard = JSON.parse(JSON.stringify(board));
-    const [startR, startC] = move.from;
-    const [endR, endC] = move.to;
-    const piece = newBoard[startR][startC];
+/**
+ * Aplica um movimento ao tabuleiro e retorna o novo estado.
+ * @param {Array<Array<string>>} board - O estado atual do tabuleiro.
+ * @param {Object} move - O objeto do movimento. Ex: { from: {r,c}, to: {r,c}, capturedPieces: [{r,c}] }
+ * @returns {Array<Array<string>>} O novo estado do tabuleiro.
+ */
+const applyMove = (board, move) => {
+    const newBoard = board.map(row => [...row]);
+    const { from, to, capturedPieces } = move;
 
-    newBoard[endR][endC] = piece; // A peça movida mantém a sua identidade original
-    newBoard[startR][startC] = E;
+    let piece = newBoard[from.r][from.c];
+    
+    // Move a peça
+    newBoard[to.r][to.c] = piece;
+    newBoard[from.r][from.c] = PIECE_TYPES.EMPTY;
 
-    for (const [capR, capC] of move.captured) {
-        newBoard[capR][capC] = E;
+    // Remove peças capturadas
+    if (capturedPieces && capturedPieces.length > 0) {
+        for (const cap of capturedPieces) {
+            newBoard[cap.r][cap.c] = PIECE_TYPES.EMPTY;
+        }
     }
     
+    // Promove a Dama
+    piece = newBoard[to.r][to.c];
+    const isWhitePawn = piece === PIECE_TYPES.WHITE_PAWN;
+    const isBlackPawn = piece === PIECE_TYPES.BLACK_PAWN;
+    
+    if ( (isWhitePawn && to.r === 0) || (isBlackPawn && to.r === 7) ) {
+        newBoard[to.r][to.c] = isWhitePawn ? PIECE_TYPES.WHITE_KING : PIECE_TYPES.BLACK_KING;
+    }
+
     return newBoard;
 };
 
-// Esta função é agora usada APENAS no fim do turno pelo socketManager.
-// Ela é a única que tem autoridade para promover uma peça.
-const applyMoveToBoard = (board, move) => {
-    const newBoard = JSON.parse(JSON.stringify(board));
-    const [startR, startC] = move.from;
-    const [endR, endC] = move.to;
-    let piece = newBoard[startR][startC];
-
-    newBoard[endR][endC] = piece;
-    newBoard[startR][startC] = E;
-
-    for (const [capR, capC] of move.captured) {
-        newBoard[capR][capC] = E;
-    }
-
-    const shouldPromote = (piece === W && endR === 0) || (piece === B && endR === 7);
-    if (shouldPromote) {
-        newBoard[endR][endC] = piece === W ? WK : BK;
-    }
-    
-    return newBoard;
-};
-
-const getPossibleMovesForPlayer = (board, playerColor) => {
-    let allPlayerPieces = [];
+/**
+ * Verifica as condições de fim de jogo (vitória/derrota/empate).
+ * @param {Array<Array<string>>} board - O estado do tabuleiro.
+ * @param {string} nextPlayerColor - A cor do jogador que fará o próximo movimento.
+ * @returns {Object|null} Retorna um objeto com o resultado se o jogo terminou, senão null.
+ */
+const checkWinCondition = (board, nextPlayerColor) => {
+    // 1. Verifica se o próximo jogador tem alguma peça
+    let hasPieces = false;
     for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
-            if (board[r][c] && board[r][c].startsWith(playerColor)) {
-                allPlayerPieces.push([r, c]);
+            if (isPlayerPiece(board[r][c], nextPlayerColor)) {
+                hasPieces = true;
+                break;
             }
         }
+        if (hasPieces) break;
     }
-    
-    let allCaptureSequences = [];
-    for(const [r,c] of allPlayerPieces) {
-        const piece = board[r][c];
-        const isKing = piece.length > 1;
-        const sequences = findCaptureSequencesFrom(board, r, c, isKing, { from: [r, c], to: null, captured: [] });
-        allCaptureSequences.push(...sequences);
-    }
-
-    if (allCaptureSequences.length > 0) {
-        let maxCaptures = 0;
-        for(const seq of allCaptureSequences){
-            if(seq.captured.length > maxCaptures){
-                maxCaptures = seq.captured.length;
-            }
-        }
-        return allCaptureSequences.filter(seq => seq.captured.length === maxCaptures);
-    }
-    
-    let allSimpleMoves = [];
-    for (const [r, c] of allPlayerPieces) {
-        allSimpleMoves.push(...findSimpleMoves(board, r, c));
-    }
-    return allSimpleMoves;
-};
-
-const findCaptureSequencesFrom = (currentBoard, r, c, isKing, sequence) => {
-    const captureMoves = isKing ? findCaptureMovesForKing(currentBoard, r, c) : findCaptureMovesForPawn(currentBoard, r, c);
-    
-    if (captureMoves.length === 0) {
-        if (sequence.captured.length > 0) {
-            sequence.to = [r, c];
-            return [sequence];
-        }
-        return [];
-    }
-
-    let allPossiblePaths = [];
-    for (const move of captureMoves) {
-        // --- CORREÇÃO APLICADA AQUI ---
-        // Usa a nova função de simulação que não promove a peça a meio do turno.
-        const nextBoard = _simulateMoveOnBoard(currentBoard, move);
-        const [nextR, nextC] = move.to;
-        
-        const newSequence = {
-            from: sequence.from,
-            to: null,
-            captured: [...sequence.captured, ...move.captured],
+    if (!hasPieces) {
+        return {
+            isFinished: true,
+            winner: nextPlayerColor === 'white' ? 'black' : 'white',
+            reason: `O jogador ${nextPlayerColor} não tem mais peças.`
         };
-
-        const continuingPaths = findCaptureSequencesFrom(nextBoard, nextR, nextC, isKing, newSequence);
-        
-        if (continuingPaths.length > 0) {
-            allPossiblePaths.push(...continuingPaths);
-        } else {
-            newSequence.to = [nextR, nextC];
-            allPossiblePaths.push(newSequence);
-        }
     }
+
+    // 2. Verifica se o próximo jogador tem algum movimento legal
+    const possibleCaptures = findAllCaptureSequences(board, nextPlayerColor);
+    if (possibleCaptures.length > 0) return null; // Tem movimentos de captura, jogo continua.
+
+    const possibleMoves = findSimpleMoves(board, nextPlayerColor);
+    if (possibleMoves.length > 0) return null; // Tem movimentos simples, jogo continua.
     
-    return allPossiblePaths;
+    // Se não há peças E não há movimentos, o jogador perde.
+    return {
+        isFinished: true,
+        winner: nextPlayerColor === 'white' ? 'black' : 'white',
+        reason: `O jogador ${nextPlayerColor} não tem movimentos legais.`
+    };
 };
 
-const checkWinCondition = (board, playerWhoJustMovedColor) => {
-    const opponentColor = playerWhoJustMovedColor === 'w' ? 'b' : 'w';
-    
-    let opponentPiecesCount = 0;
-    for (let r = 0; r < 8; r++) {
-        for (let c = 0; c < 8; c++) {
-            if (board[r][c] && board[r][c].startsWith(opponentColor)) {
-                opponentPiecesCount++;
-            }
-        }
-    }
-    
-    if (opponentPiecesCount === 0) {
-        return { winner: playerWhoJustMovedColor };
-    }
-    
-    const opponentMoves = getPossibleMovesForPlayer(board, opponentColor);
-    if (opponentMoves.length === 0) {
-        return { winner: playerWhoJustMovedColor };
-    }
-    
-    return { winner: null };
-};
 
 module.exports = {
     createInitialBoard,
-    getPossibleMovesForPlayer,
-    applyMoveToBoard,
+    findAllCaptureSequences,
+    findSimpleMoves,
+    applyMove,
     checkWinCondition,
-    pieceTypes: { B, W, BK, WK, E }
+    isPlayerPiece
 };
