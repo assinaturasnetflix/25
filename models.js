@@ -1,5 +1,5 @@
 // ==========================================================
-// FICHEIRO: models.js (VERSÃO FINAL COM O CAMPO "READY")
+// FICHEIRO: models.js (VERSÃO CORRIGIDA COM OS BUGS)
 // ==========================================================
 
 const mongoose = require('mongoose');
@@ -77,11 +77,13 @@ const gameSchema = new mongoose.Schema({
     bettingMode: { type: String, enum: ['real', 'bonus'], required: true },
     boardState: { type: [[String]], required: true },
     currentPlayer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    status: { type: String, enum: ['waiting', 'in_progress', 'completed', 'abandoned', 'cancelled'], default: 'waiting' },
+    // **CORREÇÃO 1: Adicionado 'waiting_ready' ao enum de status**
+    status: { type: String, enum: ['waiting', 'waiting_ready', 'in_progress', 'completed', 'abandoned', 'cancelled'], default: 'waiting' },
     winner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     betAmount: { type: Number, required: true },
     commissionAmount: { type: Number, default: 0 },
     isPrivate: { type: Boolean, default: false },
+    // **CORREÇÃO 2: Adicionado 'sparse: true' para permitir múltiplos jogos públicos**
     gameCode: { type: String, unique: true, sparse: true },
     lobbyDescription: { type: String, maxlength: 100 },
     moveHistory: [{
@@ -91,10 +93,7 @@ const gameSchema = new mongoose.Schema({
         captured: [[Number]],
         timestamp: { type: Date, default: Date.now }
     }],
-    
-    // *** CAMPO ADICIONADO PARA A LÓGICA DE "PRONTO" ***
     ready: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-
     hiddenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
