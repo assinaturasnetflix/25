@@ -10,14 +10,17 @@ const systemController = require('./systemControllers');
 const userController = require('./userControllers');
 const adminController = require('./adminControllers');
 
+// =======================================================
+// ROTEADOR PRINCIPAL DA API (tudo começará com /api)
+// =======================================================
+const apiRouter = express.Router();
 
-const router = express.Router();
 
-// --- Rotas de Autenticação e Públicas ---
+// --- Rotas de Autenticação: /api/auth/* ---
 const authRouter = express.Router();
 authRouter.post('/register', [
-    body('storeName').notEmpty().trim().escape(),
-    body('phone').isMobilePhone('any').withMessage('Número de telefone inválido.'),
+    body('storeName').notEmpty().trim(),
+    body('phone').isMobilePhone('any', { strictMode: false }),
     body('email').isEmail().normalizeEmail(),
     body('password').isLength({ min: 6 })
 ], systemController.register);
@@ -26,19 +29,15 @@ authRouter.post('/login', systemController.login);
 authRouter.post('/verify-email', systemController.verifyEmail);
 authRouter.post('/forgot-password', systemController.forgotPassword);
 authRouter.post('/reset-password', systemController.resetPassword);
-
-// --- Rotas do Catálogo Público (CORRIGIDO) ---
-const catalogRouter = express.Router();
-// A MUDANÇA ESTÁ AQUI: o nome do parâmetro é agora :storeNameSlug
-catalogRouter.get('/:storeNameSlug', systemController.getStoreBySlug);
+apiRouter.use('/auth', authRouter);
 
 
-// --- Rotas do Usuário (Protegidas) ---
+// --- Rotas do Usuário: /api/user/* ---
 const userRouter = express.Router();
-userRouter.use(verifyUserToken);
+userRouter.use(verifyUserToken); // Protege todas as rotas abaixo
+
 userRouter.get('/dashboard', userController.getDashboardData);
 userRouter.get('/profile', userController.getUserProfile);
-userRouter.post('/copy-link-event', userController.trackLinkCopy);
 userRouter.post('/products', upload.array('images', 10), userController.createProduct);
 userRouter.get('/products', userController.getProducts);
 userRouter.get('/products/:id', userController.getProductById);
@@ -56,13 +55,16 @@ userRouter.get('/plans', userController.getAvailablePlans);
 userRouter.post('/plans/subscribe', upload.single('paymentProof'), userController.submitPaymentProof);
 userRouter.get('/payment-history', userController.getPaymentHistory);
 userRouter.get('/storage', userController.getStorageInfo);
-userRouter.post('/storage/buy', upload.single('paymentProof'), userController.buyExtraStorage);
 userRouter.get('/storage/options', userController.getStorageOptions);
+userRouter.post('/storage/buy', upload.single('paymentProof'), userController.buyExtraStorage);
+apiRouter.use('/user', userRouter);
 
-// --- Rotas do Administrador ---
+
+// --- Rotas do Administrador: /api/admin/* ---
 const adminRouter = express.Router();
 adminRouter.post('/login', adminController.adminLogin);
-adminRouter.use(verifyAdminToken);
+adminRouter.use(verifyAdminToken); // Protege todas as rotas abaixo
+
 adminRouter.get('/users', adminController.getAllUsers);
 adminRouter.post('/users/:userId/plan', adminController.changeUserPlan);
 adminRouter.post('/users/:userId/status', adminController.updateUserStatus);
@@ -86,16 +88,13 @@ adminRouter.get('/reports', adminController.getSystemReports);
 adminRouter.get('/logs/errors', adminController.getErrorLogs);
 adminRouter.get('/logs/emails', adminController.getEmailLogs);
 adminRouter.post('/notifications/send', adminController.sendGlobalNotification);
-
-
-// --- Montagem dos Roteadores ---
-// Montar a rota de API dentro deste ficheiro
-const apiRouter = express.Router();
-apiRouter.use('/auth', authRouter);
-apiRouter.use('/user', userRouter);
 apiRouter.use('/admin', adminRouter);
 
-router.use('/api', apiRouter);
-router.use('/', catalogRouter); // Rota pública do catálogo, tratada na raiz
 
-module.exports = router;
+// --- Rota Pública do Catálogo: /api/:storeNameSlug ---
+// Esta rota está no final do apiRouter para garantir que não captura rotas como '/api/user' ou '/api/admin'.
+apiRouter.get('/:storeNameSlug', systemController.getStoreBySlug);
+
+
+// Exportamos o apiRouter que será usado em server.js sob o prefixo /api
+module.exports = apiRouter;
