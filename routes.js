@@ -1,94 +1,101 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const path = require('path');
-const { User } = require('./models');
-const controllers = require('./controllers');
+const { body } = require('express-validator');
+
+// Middlewares
+const { verifyUserToken, verifyAdminToken } = require('./auth');
+const { upload } = require('./utils');
+
+// Controladores
+const systemController = require('./systemControllers');
+const userController = require('./userControllers');
+const adminController = require('./adminControllers');
+
 
 const router = express.Router();
 
-const storage = multer.diskStorage({});
+// --- Rotas de Autenticação e Públicas ---
+const authRouter = express.Router();
+authRouter.post('/register', [
+    body('storeName').notEmpty().trim().escape(),
+    body('phone').isMobilePhone('any').withMessage('Número de telefone inválido.'),
+    body('email').isEmail().normalizeEmail(),
+    body('password').isLength({ min: 6 })
+], systemController.register);
 
-const fileFilter = (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png/;
-    const mimetype = allowedTypes.test(file.mimetype);
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+authRouter.post('/login', systemController.login);
+authRouter.post('/verify-email', systemController.verifyEmail);
+authRouter.post('/forgot-password', systemController.forgotPassword);
+authRouter.post('/reset-password', systemController.resetPassword);
 
-    if (mimetype && extname) {
-        return cb(null, true);
-    }
-    cb(new Error('Erro: Apenas são permitidos ficheiros de imagem (jpeg, jpg, png)!'), false);
-};
+// --- Rotas do Catálogo Público (CORRIGIDO) ---
+const catalogRouter = express.Router();
+// A MUDANÇA ESTÁ AQUI: o nome do parâmetro é agora :storeNameSlug
+catalogRouter.get('/:storeNameSlug', systemController.getStoreBySlug);
 
-const upload = multer({ 
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: { fileSize: 2 * 1024 * 1024 }
-});
 
-const protect = async (req, res, next) => {
-    let token;
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            token = req.headers.authorization.split(' ')[1];
-            const decoded = jwt.verify(token, process.env.JWT_SECRET);
-            req.user = await User.findById(decoded.id).select('-password');
-            if (!req.user) {
-                 return res.status(401).json({ message: 'Não autorizado, utilizador não encontrado.' });
-            }
-            if (req.user.isBlocked) {
-                return res.status(403).json({ message: 'A sua conta encontra-se bloqueada.' });
-            }
-            next();
-        } catch (error) {
-            res.status(401).json({ message: 'Não autorizado, o token falhou.' });
-        }
-    }
-    if (!token) {
-        res.status(401).json({ message: 'Não autorizado, sem token.' });
-    }
-};
+// --- Rotas do Usuário (Protegidas) ---
+const userRouter = express.Router();
+userRouter.use(verifyUserToken);
+userRouter.get('/dashboard', userController.getDashboardData);
+userRouter.get('/profile', userController.getUserProfile);
+userRouter.post('/copy-link-event', userController.trackLinkCopy);
+userRouter.post('/products', upload.array('images', 10), userController.createProduct);
+userRouter.get('/products', userController.getProducts);
+userRouter.get('/products/:id', userController.getProductById);
+userRouter.put('/products/:id', upload.array('images', 10), userController.updateProduct);
+userRouter.delete('/products/:id', userController.deleteProduct);
+userRouter.post('/categories', userController.createCategory);
+userRouter.get('/categories', userController.getCategories);
+userRouter.put('/categories/:id', userController.updateCategory);
+userRouter.delete('/categories/:id', userController.deleteCategory);
+userRouter.post('/catalog-settings/profile-picture', upload.single('profilePicture'), userController.updateProfilePicture);
+userRouter.post('/catalog-settings/cover-banner', upload.single('coverBanner'), userController.updateCoverBanner);
+userRouter.put('/catalog-settings/customization', userController.updateStoreCustomization);
+userRouter.put('/catalog-settings/socials', userController.updateSocialLinks);
+userRouter.get('/plans', userController.getAvailablePlans);
+userRouter.post('/plans/subscribe', upload.single('paymentProof'), userController.submitPaymentProof);
+userRouter.get('/payment-history', userController.getPaymentHistory);
+userRouter.get('/storage', userController.getStorageInfo);
+userRouter.post('/storage/buy', upload.single('paymentProof'), userController.buyExtraStorage);
+userRouter.get('/storage/options', userController.getStorageOptions);
 
-const admin = (req, res, next) => {
-    if (req.user && req.user.role === 'admin') {
-        next();
-    } else {
-        res.status(403).json({ message: 'Acesso negado. Rota exclusiva para administradores.' });
-    }
-};
+// --- Rotas do Administrador ---
+const adminRouter = express.Router();
+adminRouter.post('/login', adminController.adminLogin);
+adminRouter.use(verifyAdminToken);
+adminRouter.get('/users', adminController.getAllUsers);
+adminRouter.post('/users/:userId/plan', adminController.changeUserPlan);
+adminRouter.post('/users/:userId/status', adminController.updateUserStatus);
+adminRouter.delete('/users/:userId', adminController.deleteUserAccount);
+adminRouter.post('/users/:userId/custom-plan', adminController.createAndAssignCustomPlan);
+adminRouter.get('/users/:userId/payment-history', adminController.getUserPaymentHistory);
+adminRouter.get('/payments', adminController.getPendingPayments);
+adminRouter.post('/payments/:paymentId/approve', adminController.approvePayment);
+adminRouter.post('/payments/:paymentId/reject', adminController.rejectPayment);
+adminRouter.get('/payments/storage', adminController.getPendingStoragePayments);
+adminRouter.post('/payments/storage/:paymentId/approve', adminController.approveStoragePayment);
+adminRouter.post('/payments/storage/:paymentId/reject', adminController.rejectStoragePayment);
+adminRouter.post('/settings/payment-methods', adminController.addPaymentMethod);
+adminRouter.get('/settings/payment-methods', adminController.getPaymentMethods);
+adminRouter.delete('/settings/payment-methods/:methodId', adminController.deletePaymentMethod);
+adminRouter.post('/settings/storage-options', adminController.addStorageOption);
+adminRouter.get('/settings/storage-options', adminController.getStorageOptions);
+adminRouter.put('/settings/storage-options/:optionId', adminController.updateStorageOption);
+adminRouter.delete('/settings/storage-options/:optionId', adminController.deleteStorageOption);
+adminRouter.get('/reports', adminController.getSystemReports);
+adminRouter.get('/logs/errors', adminController.getErrorLogs);
+adminRouter.get('/logs/emails', adminController.getEmailLogs);
+adminRouter.post('/notifications/send', adminController.sendGlobalNotification);
 
-// Rotas Públicas
-router.post('/users/register', controllers.registerUser);
-router.post('/users/login', controllers.loginUser);
-router.post('/users/forgot-password', controllers.forgotPassword);
-router.post('/users/reset-password', controllers.resetPassword);
-router.get('/users/profile/:id', controllers.getPublicProfile);
 
-// Rotas Protegidas
-router.get('/users/me', protect, controllers.getMe);
-router.put('/users/profile', protect, controllers.updateProfile);
-router.put('/users/password', protect, controllers.updatePassword);
-router.post('/users/avatar', protect, upload.single('avatar'), controllers.uploadAvatar);
-router.post('/users/subscribe', protect, controllers.subscribePushNotifications);
-router.get('/ranking', protect, controllers.getRanking);
-router.get('/payment-methods', protect, controllers.getPublicPaymentMethods);
-router.post('/transactions/deposit', protect, upload.single('proof'), controllers.createDeposit);
-router.post('/transactions/withdrawal', protect, controllers.createWithdrawal);
-router.get('/transactions/me', protect, controllers.getMyTransactions);
-router.get('/games/me', protect, controllers.getMyGames);
-router.delete('/games/me/:id', protect, controllers.hideGameFromHistory);
+// --- Montagem dos Roteadores ---
+// Montar a rota de API dentro deste ficheiro
+const apiRouter = express.Router();
+apiRouter.use('/auth', authRouter);
+apiRouter.use('/user', userRouter);
+apiRouter.use('/admin', adminRouter);
 
-// Rotas de Admin
-router.get('/admin/users', protect, admin, controllers.getAllUsers);
-router.put('/admin/users/:id/toggle-block', protect, admin, controllers.toggleBlockUser);
-router.put('/admin/users/:id/balance', protect, admin, controllers.manualBalanceUpdate);
-router.get('/admin/users/:id/history', protect, admin, controllers.getUserHistory);
-router.get('/admin/transactions', protect, admin, controllers.getAllTransactions);
-router.put('/admin/transactions/:id/process', protect, admin, controllers.processTransaction);
-router.get('/admin/stats', protect, admin, controllers.getDashboardStats);
-router.get('/admin/settings', protect, admin, controllers.getPlatformSettings);
-router.put('/admin/settings', protect, admin, controllers.updatePlatformSettings);
-router.get('/admin/payment-methods', protect, admin, controllers.getPaymentMethodsAdmin);
-router.put('/admin/payment-methods', protect, admin, controllers.updatePaymentMethods);
+router.use('/api', apiRouter);
+router.use('/', catalogRouter); // Rota pública do catálogo, tratada na raiz
 
 module.exports = router;
